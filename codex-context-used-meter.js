@@ -3594,9 +3594,12 @@
     const showUsedInsteadOfLeft = shouldShowUsedInsteadOfLeft(state.uiConfig);
     const displayPercent = showUsedInsteadOfLeft ? clampPercent(reading.percent) : leftPercent;
     const percentText = displayPercent.toFixed(1);
+    const remainingTokens = reading.used != null && reading.limit != null ? Math.max(0, reading.limit - reading.used) : null;
     const details =
       reading.used != null && reading.limit != null
-        ? ` ${compactNumber(reading.used)} / ${compactNumber(reading.limit)}`
+        ? showUsedInsteadOfLeft
+          ? ` ${compactNumber(reading.used)} / ${compactNumber(reading.limit)}`
+          : ` ${compactNumber(remainingTokens)} / ${compactNumber(reading.limit)}`
         : "";
     const readingConversationId = normalizeConversationId(
       reading.conversationId || activeConversationId || "__unknown__"
@@ -3607,13 +3610,10 @@
 
     const level = levelForLeftPercent(leftPercent, "context");
     const compressionWarning = shouldShowCompressionWarning(leftPercent) ? "true" : "false";
-    const remainingTokens = reading.used != null && reading.limit != null ? Math.max(0, reading.limit - reading.used) : null;
     const title = formatContextTitle(reading, reading.used, remainingTokens, leftPercent, reading.percent);
     const text = showUsedInsteadOfLeft
       ? `Context Used ${percentText}%${details}`
-      : Number.isFinite(remainingTokens)
-        ? `Context Left ${percentText}% (${compactNumber(remainingTokens)} left)`
-        : `Context Left ${percentText}%${details}`;
+      : `Context Left ${percentText}%${details}`;
     const width = `${displayPercent.toFixed(1)}%`;
     const compressionZoneWidth = `${state.uiConfig.context.compressionWarningLeftPercent.toFixed(1)}%`;
 
