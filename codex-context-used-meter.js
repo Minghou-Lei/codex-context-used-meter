@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 101;
+  const SCRIPT_VERSION = 102;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -367,28 +367,36 @@
         transform: none;
         flex: 0 0 auto;
         align-self: center;
-        max-width: min(42vw, 360px);
+        max-width: none;
         margin-right: 8px;
         justify-content: flex-start;
       }
 
       #${ROOT_ID}[data-placement="inline"] .ccm-card {
-        width: var(--ccm-ring-size);
-        max-width: var(--ccm-ring-size);
-        padding: 0;
-        border: 0;
-        background: transparent;
+        width: max-content;
+        max-width: none;
+        min-height: 28px;
+        padding: 2px 6px;
+        border: 1px solid var(--ccm-card-border);
+        background: var(--ccm-card-bg);
         box-shadow: none;
         backdrop-filter: none;
       }
 
       #${ROOT_ID}[data-placement="inline"] .ccm-row {
-        gap: 0;
+        gap: 6px;
       }
 
       #${ROOT_ID}[data-placement="inline"] .ccm-value,
       #${ROOT_ID}[data-placement="inline"] .ccm-provider-value {
-        display: none !important;
+        display: inline !important;
+        overflow: visible;
+        white-space: nowrap;
+        font-size: 12px;
+      }
+
+      #${ROOT_ID}[data-placement="inline"] .ccm-track {
+        display: none;
       }
 
       #${ROOT_ID}[data-placement="floating"] {
@@ -1163,6 +1171,7 @@
     };
     const findStructuralMountForControl = (control) => {
       const footer = control.closest(".composer-footer");
+      const composerBar = findComposerArea(control);
       if (footer) {
         const footerRect = footer.getBoundingClientRect();
         const controlRect = control.getBoundingClientRect();
@@ -1170,14 +1179,30 @@
       }
 
       let current = control.parentElement;
+      let fallbackMount = null;
       while (current && current !== document.body) {
         const rect = current.getBoundingClientRect();
+        // display: contents wrappers report a zero rect at viewport origin.
+        // Skip them before applying the vertical composer-area boundary.
+        if (rect.width === 0 || rect.height === 0) {
+          current = current.parentElement;
+          continue;
+        }
         if (rect.top < window.innerHeight * 0.45) break;
-        if (current.closest(CONVERSATION_CONTENT_SELECTOR)) break;
+        // macOS Codex's right-side toolbar is the flex-1/justify-end row.
+        // Prefer it directly so wrapper nodes and conversation markers do not
+        // hide the actual insertion point.
+        if (classText(current).split(/\s+/).includes("flex-1") && classText(current).split(/\s+/).includes("justify-end")) {
+          const before = directChildOf(current, control);
+          if (before) return { parent: current, before };
+        }
+        // The composer itself lives inside the conversation container. Keep
+        // walking while inside the detected composer, and stop only after it.
+        if (current.closest(CONVERSATION_CONTENT_SELECTOR) && (!composerBar || !composerBar.contains(current))) break;
         if (!current.closest(INVALID_INLINE_MOUNT_SELECTOR)) {
           const before = directChildOf(current, control) || control;
           if (before && before !== current && current.contains(before)) {
-            return {
+            fallbackMount ||= {
               parent: current,
               before,
             };
@@ -1185,7 +1210,7 @@
         }
         current = current.parentElement;
       }
-      return null;
+      return fallbackMount;
     };
     const rememberMount = (mount) => {
       if (
