@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 101;
+  const SCRIPT_VERSION = 104;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -1128,15 +1128,21 @@
       return null;
     };
     const findComposerFooterMount = () => {
-      const footers = Array.from(document.querySelectorAll(".composer-footer"))
+      const footers = Array.from(document.querySelectorAll(".composer-footer, [data-composer-footer-responsive]"))
         .filter((footer) => isVisibleElement(footer) && footer.getBoundingClientRect().top > window.innerHeight * 0.45)
         .sort((left, right) => right.getBoundingClientRect().top - left.getBoundingClientRect().top);
 
       for (const footer of footers) {
         const footerChildren = sortByLeft(visibleDirectChildren(footer));
-        const toolbarRoot = footerChildren
+        let toolbarRoot = footerChildren
           .filter((child) => hasClassToken(child, "justify-end") && hasVisibleInteractiveControl(child))
           .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0];
+        if (!toolbarRoot) {
+          // 新版 Codex：footer 使用 CSS module 类名，工具栏行位于深层后代中。
+          toolbarRoot = Array.from(footer.querySelectorAll(".justify-end"))
+            .filter((child) => isVisibleElement(child) && hasVisibleInteractiveControl(child))
+            .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0];
+        }
         if (!toolbarRoot) continue;
 
         const toolbarChildren = sortByLeft(visibleDirectChildren(toolbarRoot));
@@ -1242,6 +1248,14 @@
       root.hidden = true;
       applyFloatingUiState(root);
       closeSpendHistory();
+      if (state.inlineMountLookupAt && Date.now() - state.inlineMountLookupAt > 30000) {
+        // 长时间找不到 inline 宿主时自动降级为 floating，避免面板永远不可见。
+        state.uiState = { ...readUiState(), mode: "floating" };
+        writeUiState();
+        mountRoot(root);
+        return;
+      }
+      state.inlineMountLookupAt = state.inlineMountLookupAt || Date.now();
       scheduleUpdate(SWITCH_RETRY_INTERVAL_MS);
       return;
     }
@@ -3056,6 +3070,90 @@
     return null;
   }
 
+  // 适配新版 Codex（26.730+）：React root 暴露在 window.__codexRoot，
+  // context usage 数据位于 fiber 深层 hook state（{ modelContextWindow, last.totalTokens }）。
+  // 旧实现按对象键 DFS 深度不足，这里沿 fiber.child/sibling + hook 链精确遍历。
+  function scanStatusReactV2ContextUsage(activeConversationId) {
+    const roots = [];
+    const rootElement = document.getElementById("root");
+    if (rootElement) {
+      for (const key of Object.keys(rootElement)) {
+        if (!key.startsWith("__reactContainer$")) continue;
+        const container = rootElement[key];
+        if (container && container.current) roots.push(container.current);
+      }
+    }
+    if (window.__codexRoot && window.__codexRoot._internalRoot) {
+      const current = window.__codexRoot._internalRoot.current;
+      if (current) roots.push(current);
+    }
+    if (!roots.length) return null;
+
+    const seen = new WeakSet();
+    let visited = 0;
+    const cap = 400000;
+
+    function visitFiber(fiber) {
+      if (!fiber || visited >= cap) return null;
+      if (seen.has(fiber)) return null;
+      seen.add(fiber);
+      visited += 1;
+
+      const candidates = [];
+      try {
+        if (fiber.memoizedProps && typeof fiber.memoizedProps === "object") {
+          candidates.push(fiber.memoizedProps);
+        }
+      } catch {}
+      try {
+        if (fiber.pendingProps && typeof fiber.pendingProps === "object") {
+          candidates.push(fiber.pendingProps);
+        }
+      } catch {}
+      let hook = fiber.memoizedState;
+      let hookIndex = 0;
+      while (hook && hookIndex < 80) {
+        try {
+          if (hook.memoizedState && typeof hook.memoizedState === "object") {
+            candidates.push(hook.memoizedState);
+          }
+        } catch {}
+        hook = hook.next;
+        hookIndex += 1;
+      }
+
+      for (const candidate of candidates) {
+        try {
+          if (!looksLikeStatusContextUsageObject(candidate)) continue;
+          const fiberProps = fiber.memoizedProps;
+          const fiberConversationId =
+            fiberProps &&
+            typeof fiberProps === "object" &&
+            normalizeConversationId(
+              fiberProps.conversationId || fiberProps.threadId || fiberProps.localConversationId,
+            );
+          if (
+            fiberConversationId &&
+            activeConversationId &&
+            !conversationIdsMatch(fiberConversationId, activeConversationId)
+          ) {
+            continue;
+          }
+          const reading = parseStatusContextUsageObject(candidate, "status-react-v2", null);
+          if (reading) return withConversationId(reading, activeConversationId);
+        } catch {}
+      }
+
+      return visitFiber(fiber.child) || visitFiber(fiber.sibling);
+    }
+
+    for (const root of roots) {
+      const reading = visitFiber(root);
+      if (reading) return reading;
+    }
+    return null;
+  }
+
   function isAppSignalScope(value) {
     return !!(
       value &&
@@ -3505,6 +3603,13 @@
       state.switchRetryUntil = 0;
       clearRetryUpdate();
       return statusReactReading;
+    }
+
+    const statusReactV2Reading = scanStatusReactV2ContextUsage(activeConversationId);
+    if (statusReactV2Reading) {
+      state.switchRetryUntil = 0;
+      clearRetryUpdate();
+      return statusReactV2Reading;
     }
 
     if (canRunExpensiveFallback) {
