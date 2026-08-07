@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 107;
+  const SCRIPT_VERSION = 108;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -373,22 +373,23 @@
       }
 
       #${ROOT_ID}[data-placement="inline"] .ccm-card {
-        width: var(--ccm-ring-size);
-        max-width: var(--ccm-ring-size);
-        padding: 0;
-        border: 0;
-        background: transparent;
-        box-shadow: none;
-        backdrop-filter: none;
+        width: auto;
+        max-width: var(--ccm-inline-max-width);
+        padding: 4px 10px;
+        border: 1px solid var(--ccm-card-border);
+        border-radius: 999px;
+        background: var(--ccm-card-bg);
+        box-shadow: var(--ccm-card-shadow);
+        backdrop-filter: blur(10px);
       }
 
       #${ROOT_ID}[data-placement="inline"] .ccm-row {
-        gap: 0;
+        gap: 7px;
       }
 
       #${ROOT_ID}[data-placement="inline"] .ccm-value,
       #${ROOT_ID}[data-placement="inline"] .ccm-provider-value {
-        display: none !important;
+        display: inline !important;
       }
 
       #${ROOT_ID}[data-placement="floating"] {
