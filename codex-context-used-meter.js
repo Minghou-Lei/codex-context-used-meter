@@ -14,7 +14,7 @@
   const SESSION_TOTALS_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 126;
+  const SCRIPT_VERSION = 127;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -243,6 +243,10 @@
     historyAnimationTimers: [],
     historyChartSettleTimers: [],
     historyChartAnimatingUntil: 0,
+    historyChartConversationIdByKind: {
+      context: null,
+      provider: null,
+    },
     uiConfig: DEFAULT_UI_CONFIG,
     providerSummaryListener: null,
     lastScanAt: 0,
@@ -2183,9 +2187,12 @@
     if (totalNode) totalNode.textContent = total > 0 ? formatHistoryDelta(kind, total, currency) : "--";
     if (!chart) return;
 
-    const entranceInFlight = !!animate || state.historyChartAnimatingUntil > Date.now();
-    if (!entranceInFlight) {
-      chart.replaceWith(makeSpendHistoryChart(items, kind, currency, animate));
+    const chartConversationId = state.historyChartConversationIdByKind[kind];
+    const animateChart = !!animate || chartConversationId !== conversationId;
+    const entranceInFlight = state.historyChartAnimatingUntil > Date.now();
+    if (animateChart || !entranceInFlight) {
+      chart.replaceWith(makeSpendHistoryChart(items, kind, currency, animateChart));
+      state.historyChartConversationIdByKind[kind] = conversationId;
     }
   }
 
