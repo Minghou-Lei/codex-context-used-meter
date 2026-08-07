@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 114;
+  const SCRIPT_VERSION = 115;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -1650,17 +1650,22 @@
     return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
-  function formatMoney(value) {
+  function currencySymbol(currency) {
+    return String(currency || "USD").toUpperCase() === "CNY" ? "¥" : "$";
+  }
+
+  function formatMoney(value, currency) {
     const amount = formatAmount(value);
-    return amount === "--" ? amount : `$${amount}`;
+    return amount === "--" ? amount : `${currencySymbol(currency)}${amount}`;
   }
 
   function formatProviderTitle(name, provider, usedAmount, remainingAmount, totalAmount, usedPercent, leftPercent) {
+    const money = (value) => formatMoney(value, provider && provider.currency);
     return [
       `${name} Balance`,
-      `Left: ${formatMoney(remainingAmount)} (${leftPercent.toFixed(1)}%)`,
-      `Used: ${formatMoney(usedAmount)} (${usedPercent.toFixed(1)}%)`,
-      `Total: ${formatMoney(totalAmount)}`,
+      `Left: ${money(remainingAmount)} (${leftPercent.toFixed(1)}%)`,
+      `Used: ${money(usedAmount)} (${usedPercent.toFixed(1)}%)`,
+      `Total: ${money(totalAmount)}`,
       `Status: ${provider.status || "unknown"}`,
     ].join(" | ");
   }
@@ -1722,22 +1727,22 @@
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  function formatHistoryDelta(kind, amount) {
-    if (kind === "provider") return `-${formatMoney(amount)}`;
+  function formatHistoryDelta(kind, amount, currency) {
+    if (kind === "provider") return `-${formatMoney(amount, currency)}`;
     return `-${Math.round(amount).toLocaleString("en-US")} Tokens`;
   }
 
-  function formatHistoryAxisValue(kind, amount) {
-    if (kind === "provider") return formatMoney(amount);
+  function formatHistoryAxisValue(kind, amount, currency) {
+    if (kind === "provider") return formatMoney(amount, currency);
     if (!Number.isFinite(amount)) return "--";
     if (amount >= 1000000) return `${(amount / 1000000).toFixed(1)}M`;
     if (amount >= 1000) return `${(amount / 1000).toFixed(1)}K`;
     return String(Math.round(amount));
   }
 
-  function formatHistoryPointTitle(kind, point) {
+  function formatHistoryPointTitle(kind, point, currency) {
     const lines = [
-      `${formatHistoryTime(point.item.time)} ${formatHistoryDelta(kind, point.item.amount)}`,
+      `${formatHistoryTime(point.item.time)} ${formatHistoryDelta(kind, point.item.amount, currency)}`,
     ];
     if (point.item.meta) lines.push(String(point.item.meta));
     return lines.join("\n");
@@ -1787,7 +1792,7 @@
     return Number.isFinite(value) ? value.toFixed(1) : "0.0";
   }
 
-  function makeSpendHistoryChart(items, kind) {
+  function makeSpendHistoryChart(items, kind, currency) {
     const now = Date.now();
     const cutoff = now - SPEND_HISTORY_WINDOW_MS;
     const width = SPEND_HISTORY_CHART_WIDTH;
@@ -1887,14 +1892,14 @@
     topLabel.setAttribute("class", "ccm-history-axis-label");
     topLabel.setAttribute("x", "2");
     topLabel.setAttribute("y", svgPoint(plotTop + 4));
-    topLabel.textContent = formatHistoryAxisValue(kind, axisMax);
+    topLabel.textContent = formatHistoryAxisValue(kind, axisMax, currency);
     svg.appendChild(topLabel);
 
     const bottomLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
     bottomLabel.setAttribute("class", "ccm-history-axis-label");
     bottomLabel.setAttribute("x", "2");
     bottomLabel.setAttribute("y", svgPoint(plotBottom));
-    bottomLabel.textContent = formatHistoryAxisValue(kind, axisMin);
+    bottomLabel.textContent = formatHistoryAxisValue(kind, axisMin, currency);
     svg.appendChild(bottomLabel);
 
     const linePath = points
@@ -1922,7 +1927,7 @@
       point.setAttribute("cy", svgPoint(historyPoint.y));
       point.setAttribute("r", isLatestPoint ? "3" : "2.4");
       const pointTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
-      pointTitle.textContent = formatHistoryPointTitle(kind, historyPoint);
+      pointTitle.textContent = formatHistoryPointTitle(kind, historyPoint, currency);
       point.appendChild(pointTitle);
       svg.appendChild(point);
 
@@ -1932,7 +1937,7 @@
       hit.setAttribute("cy", svgPoint(historyPoint.y));
       hit.setAttribute("r", "8");
       const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-      title.textContent = formatHistoryPointTitle(kind, historyPoint);
+      title.textContent = formatHistoryPointTitle(kind, historyPoint, currency);
       hit.appendChild(title);
       svg.appendChild(hit);
     }
@@ -1942,7 +1947,7 @@
     const windowLabel = document.createElement("span");
     windowLabel.textContent = axisLabel;
     const lastLabel = document.createElement("span");
-    lastLabel.textContent = formatHistoryDelta(kind, lastPoint.item.amount);
+    lastLabel.textContent = formatHistoryDelta(kind, lastPoint.item.amount, currency);
     if (lastPoint.item.meta) lastLabel.title = String(lastPoint.item.meta);
     caption.append(windowLabel, lastLabel);
 
@@ -1960,14 +1965,15 @@
       section.hidden = true;
       return;
     }
+    const provider = kind === "provider" ? pickProviderSummary(readProviderSummary()) : null;
     if (kind === "provider") {
-      const provider = pickProviderSummary(readProviderSummary());
       if (provider && provider.kind === "wallet") {
         section.hidden = true;
         return;
       }
     }
     if (section.hidden) section.hidden = false;
+    const currency = provider ? provider.currency : undefined;
 
     pruneSpendHistory();
     const conversationId = metaConversationId();
@@ -1988,10 +1994,10 @@
     }
     const totalNode = section.querySelector(".ccm-history-total");
     const chart = section.querySelector(".ccm-history-chart");
-    if (totalNode) totalNode.textContent = total > 0 ? formatHistoryDelta(kind, total) : "--";
+    if (totalNode) totalNode.textContent = total > 0 ? formatHistoryDelta(kind, total, currency) : "--";
     if (!chart) return;
 
-    chart.replaceWith(makeSpendHistoryChart(items, kind));
+    chart.replaceWith(makeSpendHistoryChart(items, kind, currency));
   }
 
   function metaConversationId() {
@@ -2242,9 +2248,9 @@
     enqueueSpendEffect(`-${Math.round(deltaTokens).toLocaleString("en-US")} Tokens`);
   }
 
-  function showProviderSpendEffect(deltaAmount) {
+  function showProviderSpendEffect(deltaAmount, currency) {
     if (!Number.isFinite(deltaAmount) || deltaAmount <= 0) return;
-    enqueueSpendEffect(`-${formatMoney(deltaAmount)}`);
+    enqueueSpendEffect(`-${formatMoney(deltaAmount, currency)}`);
   }
 
   function shouldShowContextSpendEffect(conversationId, currentUsed) {
@@ -2401,13 +2407,13 @@
     const name = String(provider.displayName || provider.id || "Provider").slice(0, 48);
     const isWallet = provider.kind === "wallet";
     const text = isWallet
-      ? `${name} Left ${formatMoney(remainingAmount)}`
-      : `${name} Left ${leftPercent.toFixed(1)}% (${formatMoney(remainingAmount)} left)`;
+      ? `${name} Left ${formatMoney(remainingAmount, provider.currency)}`
+      : `${name} Left ${leftPercent.toFixed(1)}% (${formatMoney(remainingAmount, provider.currency)} left)`;
     const width = `${leftPercent.toFixed(1)}%`;
     const title = isWallet
       ? [
           `${name} Balance`,
-          `Remaining: ${formatMoney(remainingAmount)}`,
+          `Remaining: ${formatMoney(remainingAmount, provider.currency)}`,
           `Currency: ${provider.currency || "CNY"}`,
           `Status: ${provider.status || "unknown"}`,
         ].join(" | ")
@@ -2421,7 +2427,7 @@
         const deltaAmount = (currentUsed - previousUsed) * (totalAmount / Number(provider.total));
         if (shouldShowProviderSpendEffect(providerId, currentUsed)) {
           recordSpend("provider", deltaAmount, providerId);
-          showProviderSpendEffect(deltaAmount);
+          showProviderSpendEffect(deltaAmount, provider.currency);
         }
       }
       state.lastAnimatedProviderUsedById.set(providerId, currentUsed);

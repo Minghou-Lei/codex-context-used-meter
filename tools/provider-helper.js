@@ -238,6 +238,7 @@ function normalizeSubscription(provider, payload) {
     id,
     displayName,
     status: "active",
+    currency: active.currency ? String(active.currency) : "USD",
     used: safeUsed,
     total,
     remaining,
