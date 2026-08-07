@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 117;
+  const SCRIPT_VERSION = 119;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -646,7 +646,52 @@
         transform: translateY(0);
         pointer-events: auto;
         visibility: visible;
+        animation: ccm-history-in 180ms ease-out;
       }
+
+      @keyframes ccm-history-in {
+        from {
+          opacity: 0;
+          transform: translateY(-4px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @keyframes ccm-line-draw {
+        from {
+          stroke-dashoffset: var(--ccm-line-length, 300);
+        }
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+
+      @keyframes ccm-history-area-in {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+
+      #${HISTORY_PORTAL_ID} .ccm-history-chart--animate .ccm-history-line {
+        stroke-dasharray: var(--ccm-line-length, 300);
+        stroke-dashoffset: var(--ccm-line-length, 300);
+        animation: ccm-line-draw 600ms ease-out forwards;
+      }
+
+      #${HISTORY_PORTAL_ID} .ccm-history-chart--animate .ccm-history-area {
+        animation: ccm-history-area-in 500ms ease-out both;
+      }
+
+      #${HISTORY_PORTAL_ID} .ccm-history-chart--animate .ccm-history-point {
+        animation: ccm-history-area-in 350ms ease-out both;
+      }
+
 
       #${HISTORY_PORTAL_ID} .ccm-history-grid {
         display: grid;
@@ -1791,7 +1836,7 @@
     return Number.isFinite(value) ? value.toFixed(1) : "0.0";
   }
 
-  function makeSpendHistoryChart(items, kind, currency) {
+  function makeSpendHistoryChart(items, kind, currency, animate) {
     const now = Date.now();
     const cutoff = now - SPEND_HISTORY_WINDOW_MS;
     const width = SPEND_HISTORY_CHART_WIDTH;
@@ -1806,6 +1851,7 @@
     const innerHeight = height - padding * 2;
     const chart = document.createElement("div");
     chart.className = "ccm-history-chart";
+    if (animate) chart.classList.add("ccm-history-chart--animate");
 
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", "ccm-history-svg");
@@ -1915,6 +1961,15 @@
     line.setAttribute("class", "ccm-history-line");
     line.setAttribute("d", linePath);
     svg.appendChild(line);
+    if (animate) {
+      try {
+        const lineLength = line.getTotalLength();
+        line.style.setProperty("--ccm-line-length", String(lineLength));
+        line.style.strokeDasharray = String(lineLength);
+        line.style.strokeDashoffset = String(lineLength);
+      } catch {
+      }
+    }
 
     const realPoints = points.filter((historyPoint) => !historyPoint.isSynthetic);
     const lastPoint = realPoints[realPoints.length - 1] || points[points.length - 1];
@@ -1954,7 +2009,7 @@
     return chart;
   }
 
-  function renderHistorySection(kind) {
+  function renderHistorySection(kind, animate) {
     const panel = state.historyPanel;
     const section = panel && panel.querySelector(`[data-history-kind="${kind}"]`);
     if (!section) return;
@@ -1996,7 +2051,10 @@
     if (totalNode) totalNode.textContent = total > 0 ? formatHistoryDelta(kind, total, currency) : "--";
     if (!chart) return;
 
-    chart.replaceWith(makeSpendHistoryChart(items, kind, currency));
+    const hasChartContent = !!chart.querySelector("svg");
+    if (!hasChartContent || animate) {
+      chart.replaceWith(makeSpendHistoryChart(items, kind, currency, animate));
+    }
   }
 
   function metaConversationId() {
@@ -2013,10 +2071,10 @@
     return state.providerSessionTotalsByConversationId.get(normalizedConversationId) || 0;
   }
 
-  function renderSpendHistory() {
+  function renderSpendHistory(animate) {
     const grid = state.historyPanel && state.historyPanel.querySelector(".ccm-history-grid");
-    renderHistorySection("context");
-    renderHistorySection("provider");
+    renderHistorySection("context", animate);
+    renderHistorySection("provider", animate);
     if (grid) {
       const providerSection = state.historyPanel && state.historyPanel.querySelector(
         '[data-history-kind="provider"]',
@@ -2102,7 +2160,7 @@
   function refreshOpenSpendHistory(root = state.root) {
     if (!root || root.dataset.historyOpen !== "true") return;
     ensureHistoryPortal(root);
-    renderSpendHistory();
+    renderSpendHistory(false);
     clampHistoryPanelToViewport(root);
   }
 
@@ -2357,7 +2415,7 @@
       closeSpendHistory();
       if (!keepVisibleForSpend) clearSpendEffects();
     } else if (root.dataset.historyOpen === "true") {
-      renderSpendHistory();
+    renderSpendHistory(true);
     }
     if (!root.hidden) playNextSpendEffect();
   }
