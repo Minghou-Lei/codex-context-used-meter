@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 119;
+  const SCRIPT_VERSION = 121;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -231,6 +231,7 @@
     providerSessionTotalsByConversationId: new Map(),
     historyCloseTimer: 0,
     historyHoverCleanup: null,
+    historyAnimationFrames: [],
     uiConfig: DEFAULT_UI_CONFIG,
     providerSummaryListener: null,
     lastScanAt: 0,
@@ -646,50 +647,6 @@
         transform: translateY(0);
         pointer-events: auto;
         visibility: visible;
-        animation: ccm-history-in 180ms ease-out;
-      }
-
-      @keyframes ccm-history-in {
-        from {
-          opacity: 0;
-          transform: translateY(-4px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-
-      @keyframes ccm-line-draw {
-        from {
-          stroke-dashoffset: var(--ccm-line-length, 300);
-        }
-        to {
-          stroke-dashoffset: 0;
-        }
-      }
-
-      @keyframes ccm-history-area-in {
-        from {
-          opacity: 0;
-        }
-        to {
-          opacity: 1;
-        }
-      }
-
-      #${HISTORY_PORTAL_ID} .ccm-history-chart--animate .ccm-history-line {
-        stroke-dasharray: var(--ccm-line-length, 300);
-        stroke-dashoffset: var(--ccm-line-length, 300);
-        animation: ccm-line-draw 600ms ease-out forwards;
-      }
-
-      #${HISTORY_PORTAL_ID} .ccm-history-chart--animate .ccm-history-area {
-        animation: ccm-history-area-in 500ms ease-out both;
-      }
-
-      #${HISTORY_PORTAL_ID} .ccm-history-chart--animate .ccm-history-point {
-        animation: ccm-history-area-in 350ms ease-out both;
       }
 
 
@@ -1851,7 +1808,6 @@
     const innerHeight = height - padding * 2;
     const chart = document.createElement("div");
     chart.className = "ccm-history-chart";
-    if (animate) chart.classList.add("ccm-history-chart--animate");
 
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", "ccm-history-svg");
@@ -1964,6 +1920,7 @@
     if (animate) {
       try {
         const lineLength = line.getTotalLength();
+        line._ccmLineLength = lineLength;
         line.style.setProperty("--ccm-line-length", String(lineLength));
         line.style.strokeDasharray = String(lineLength);
         line.style.strokeDashoffset = String(lineLength);
@@ -2006,6 +1963,12 @@
     caption.append(windowLabel, lastLabel);
 
     chart.append(svg, caption);
+    if (animate) {
+      const chartArea = chart.querySelector(".ccm-history-area");
+      if (chartArea) chartArea.style.opacity = "0";
+      for (const point of chart.querySelectorAll(".ccm-history-point")) point.style.opacity = "0";
+      animateHistoryChart(chart);
+    }
     return chart;
   }
 
@@ -2127,9 +2090,58 @@
     panel.style.setProperty("--ccm-history-top", `${Math.round(top)}px`);
   }
 
+  function cancelHistoryAnimations() {
+    for (const frame of state.historyAnimationFrames) {
+      window.cancelAnimationFrame(frame);
+    }
+    state.historyAnimationFrames = [];
+  }
+
+  function animateHistoryPanelIn(panel) {
+    const start = performance.now();
+    const duration = 180;
+    const tick = (now) => {
+      const progress = Math.min(1, (now - start) / duration);
+      panel.style.opacity = String(1 - Math.pow(1 - progress, 3));
+      if (progress < 1) {
+        state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
+      } else {
+        panel.style.opacity = "1";
+      }
+    };
+    state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
+  }
+
+  function animateHistoryChart(chart) {
+    const line = chart.querySelector(".ccm-history-line");
+    const area = chart.querySelector(".ccm-history-area");
+    const points = Array.from(chart.querySelectorAll(".ccm-history-point"));
+    const lineLength = line && line._ccmLineLength ? line._ccmLineLength : 0;
+    const start = performance.now();
+    const duration = 700;
+    const tick = (now) => {
+      const progress = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      if (line && lineLength > 0) {
+        line.style.strokeDashoffset = String(lineLength * (1 - eased));
+      }
+      if (area) area.style.opacity = String(eased);
+      for (const point of points) point.style.opacity = String(Math.min(1, eased * 1.4));
+      if (progress < 1) {
+        state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
+      } else {
+        if (line) line.style.strokeDashoffset = "0";
+        if (area) area.style.opacity = "1";
+        for (const point of points) point.style.opacity = "1";
+      }
+    };
+    state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
+  }
+
   function openSpendHistory() {
     const root = state.root;
     if (!root) return;
+    if (root.dataset.historyOpen === "true") return;
     if (root.hidden) {
       closeSpendHistory();
       return;
@@ -2141,19 +2153,21 @@
       } catch {
       }
     }
+    cancelHistoryAnimations();
     if (state.historyPortal) document.body.appendChild(state.historyPortal);
     if (state.historyCloseTimer) {
       window.clearTimeout(state.historyCloseTimer);
       state.historyCloseTimer = 0;
     }
-    renderSpendHistory();
+    renderSpendHistory(true);
     clampHistoryPanelToViewport(root);
     if (root.dataset.historyOpen !== "true") root.dataset.historyOpen = "true";
     if (state.historyPortal) state.historyPortal.dataset.historyOpen = "true";
-    if (state.historyPanel) state.historyPanel.setAttribute("aria-hidden", "false");
     if (state.historyPanel) {
-      state.historyPanel.style.opacity = "1";
+      state.historyPanel.setAttribute("aria-hidden", "false");
       state.historyPanel.style.visibility = "visible";
+      state.historyPanel.style.opacity = "0";
+      animateHistoryPanelIn(state.historyPanel);
     }
   }
 
@@ -2173,6 +2187,7 @@
       } catch {
       }
     }
+    cancelHistoryAnimations();
     if (state.historyCloseTimer) {
       window.clearTimeout(state.historyCloseTimer);
       state.historyCloseTimer = 0;
@@ -2415,7 +2430,7 @@
       closeSpendHistory();
       if (!keepVisibleForSpend) clearSpendEffects();
     } else if (root.dataset.historyOpen === "true") {
-    renderSpendHistory(true);
+      renderSpendHistory(false);
     }
     if (!root.hidden) playNextSpendEffect();
   }
