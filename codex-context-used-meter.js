@@ -7,9 +7,14 @@
   const HISTORY_PORTAL_ID = "codex-context-meter-history-portal";
   const CONFIG_KEY = "__codexContextMeterConfig";
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
+  const SPEND_STATE_STORAGE_KEY = "__codexContextMeterSpendState";
+  const SPEND_STATE_VERSION = 1;
+  const SPEND_STATE_SAVE_DELAY_MS = 400;
+  const SESSION_TOTALS_MAX_ENTRIES = 500;
+  const SESSION_TOTALS_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 123;
+  const SCRIPT_VERSION = 124;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -229,6 +234,9 @@
     spendEffectTimer: 0,
     contextSessionTotalsByConversationId: new Map(),
     providerSessionTotalsByConversationId: new Map(),
+    contextSessionTotalsLastActivityByConversationId: new Map(),
+    providerSessionTotalsLastActivityByConversationId: new Map(),
+    spendStateSaveTimer: 0,
     historyCloseTimer: 0,
     historyHoverCleanup: null,
     historyAnimationFrames: [],
@@ -273,6 +281,8 @@
     threadContentLookupAt: 0,
     threadContentLookupResult: false,
   };
+
+  restoreSpendState();
 
   function installStyle() {
     const existingStyle = document.getElementById(STYLE_ID);
@@ -1684,6 +1694,136 @@
     return parts.join(" | ");
   }
 
+  function readStoredJson(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function touchSessionTotal(totalsMap, activityMap, conversationId, amount) {
+    const previousTotal = totalsMap.get(conversationId) || 0;
+    totalsMap.delete(conversationId);
+    totalsMap.set(conversationId, previousTotal + amount);
+    activityMap.delete(conversationId);
+    activityMap.set(conversationId, Date.now());
+    while (totalsMap.size > SESSION_TOTALS_MAX_ENTRIES) {
+      const oldestKey = totalsMap.keys().next().value;
+      totalsMap.delete(oldestKey);
+      activityMap.delete(oldestKey);
+    }
+  }
+
+  function restoreSpendState() {
+    const stored = readStoredJson(SPEND_STATE_STORAGE_KEY);
+    if (!stored || stored.version !== SPEND_STATE_VERSION) return;
+
+    const now = Date.now();
+    const historyCutoff = now - SPEND_HISTORY_WINDOW_MS;
+    for (const kind of ["context", "provider"]) {
+      const rawItems = stored.history && Array.isArray(stored.history[kind]) ? stored.history[kind] : [];
+      const items = state.spendHistory[kind];
+      for (const item of rawItems) {
+        if (!item || typeof item !== "object") continue;
+        const time = Number(item.time);
+        const amount = Number(item.amount);
+        const conversationId = normalizeConversationId(item.conversationId);
+        if (!Number.isFinite(time) || time < historyCutoff || time > now + 60 * 1000) continue;
+        if (!Number.isFinite(amount) || amount <= 0) continue;
+        items.push({
+          time,
+          amount,
+          conversationId: conversationId || "__unknown__",
+          meta: typeof item.meta === "string" ? item.meta.slice(0, 200) : "",
+        });
+        if (items.length >= SPEND_HISTORY_MAX_ITEMS) break;
+      }
+      items.sort((a, b) => a.time - b.time);
+    }
+
+    const totalsMaps = {
+      context: state.contextSessionTotalsByConversationId,
+      provider: state.providerSessionTotalsByConversationId,
+    };
+    const activityMaps = {
+      context: state.contextSessionTotalsLastActivityByConversationId,
+      provider: state.providerSessionTotalsLastActivityByConversationId,
+    };
+    for (const kind of ["context", "provider"]) {
+      const rawEntries = stored.totals && Array.isArray(stored.totals[kind]) ? stored.totals[kind] : [];
+      const entries = [];
+      for (const entry of rawEntries) {
+        if (!Array.isArray(entry) || entry.length < 3) continue;
+        const conversationId = normalizeConversationId(entry[0]);
+        const value = Number(entry[1]);
+        const lastActivity = Number(entry[2]) || 0;
+        if (!conversationId || !Number.isFinite(value) || value <= 0) continue;
+        if (lastActivity > 0 && now - lastActivity > SESSION_TOTALS_MAX_AGE_MS) continue;
+        entries.push([conversationId, value, lastActivity]);
+      }
+      entries.sort((a, b) => (a[2] || 0) - (b[2] || 0));
+      for (const [conversationId, value, lastActivity] of entries.slice(-SESSION_TOTALS_MAX_ENTRIES)) {
+        totalsMaps[kind].set(conversationId, value);
+        activityMaps[kind].set(conversationId, lastActivity || now);
+      }
+    }
+    pruneSpendHistory();
+  }
+
+  function persistSpendState() {
+    try {
+      pruneSpendHistory();
+      const now = Date.now();
+      const stored = {
+        version: SPEND_STATE_VERSION,
+        savedAt: now,
+        history: {
+          context: state.spendHistory.context.slice(0, SPEND_HISTORY_MAX_ITEMS),
+          provider: state.spendHistory.provider.slice(0, SPEND_HISTORY_MAX_ITEMS),
+        },
+        totals: {
+          context: [],
+          provider: [],
+        },
+      };
+      for (const kind of ["context", "provider"]) {
+        const totalsMap = kind === "context"
+          ? state.contextSessionTotalsByConversationId
+          : state.providerSessionTotalsByConversationId;
+        const activityMap = kind === "context"
+          ? state.contextSessionTotalsLastActivityByConversationId
+          : state.providerSessionTotalsLastActivityByConversationId;
+        const entries = [];
+        for (const conversationId of totalsMap.keys()) {
+          const value = totalsMap.get(conversationId);
+          const lastActivity = activityMap.get(conversationId) || now;
+          if (now - lastActivity > SESSION_TOTALS_MAX_AGE_MS) continue;
+          entries.push([String(conversationId), Number(value), lastActivity]);
+        }
+        entries.sort((a, b) => (a[2] || 0) - (b[2] || 0));
+        stored.totals[kind] = entries.slice(-SESSION_TOTALS_MAX_ENTRIES);
+      }
+      localStorage.setItem(SPEND_STATE_STORAGE_KEY, JSON.stringify(stored));
+    } catch {
+    }
+  }
+
+  function schedulePersistSpendState() {
+    window.clearTimeout(state.spendStateSaveTimer);
+    state.spendStateSaveTimer = window.setTimeout(() => {
+      state.spendStateSaveTimer = 0;
+      persistSpendState();
+    }, SPEND_STATE_SAVE_DELAY_MS);
+  }
+
+  function handlePageHide() {
+    persistSpendState();
+  }
+
   function pruneSpendHistory(now = Date.now()) {
     const cutoff = now - SPEND_HISTORY_WINDOW_MS;
     for (const kind of ["context", "provider"]) {
@@ -1705,11 +1845,19 @@
         : metaConversationId();
     const itemMeta = kind === "provider" ? String(meta || "") : "";
     if (kind === "context") {
-      const previousTotal = state.contextSessionTotalsByConversationId.get(conversationId) || 0;
-      state.contextSessionTotalsByConversationId.set(conversationId, previousTotal + amount);
+      touchSessionTotal(
+        state.contextSessionTotalsByConversationId,
+        state.contextSessionTotalsLastActivityByConversationId,
+        conversationId,
+        amount,
+      );
     } else {
-      const previousTotal = state.providerSessionTotalsByConversationId.get(conversationId) || 0;
-      state.providerSessionTotalsByConversationId.set(conversationId, previousTotal + amount);
+      touchSessionTotal(
+        state.providerSessionTotalsByConversationId,
+        state.providerSessionTotalsLastActivityByConversationId,
+        conversationId,
+        amount,
+      );
     }
 
     state.spendHistory[kind].push({
@@ -1719,6 +1867,7 @@
       meta: itemMeta,
     });
     pruneSpendHistory(now);
+    schedulePersistSpendState();
     if (state.root && state.root.dataset.historyOpen === "true") {
       renderSpendHistory();
     }
@@ -3970,6 +4119,10 @@
     refresh: updateMeter,
     setProviderSummary,
     destroy() {
+      window.clearTimeout(state.spendStateSaveTimer);
+      state.spendStateSaveTimer = 0;
+      persistSpendState();
+      window.removeEventListener("pagehide", handlePageHide);
       window.clearInterval(state.timer);
       window.clearTimeout(state.pendingUpdate);
       window.clearTimeout(state.historyCloseTimer);
@@ -4021,6 +4174,14 @@
         hasAppSignalModules: !!state.appSignalModules,
         appSignalTokenUsageSelectorExport: state.appSignalTokenUsageSelectorExport,
         providerSummary: state.providerSummary,
+        spendHistory: {
+          context: state.spendHistory.context.slice(),
+          provider: state.spendHistory.provider.slice(),
+        },
+        sessionTotals: {
+          context: Array.from(state.contextSessionTotalsByConversationId.entries()),
+          provider: Array.from(state.providerSessionTotalsByConversationId.entries()),
+        },
       };
     },
   };
@@ -4028,6 +4189,7 @@
   restoreLegacyCaptureHooks();
   installStyle();
   installProviderSummaryListener();
+  window.addEventListener("pagehide", handlePageHide);
   updateMeter();
   installObserver();
   state.timer = window.setInterval(updateMeter, UPDATE_INTERVAL_MS);
