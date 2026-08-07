@@ -14,7 +14,7 @@
   const SESSION_TOTALS_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 124;
+  const SCRIPT_VERSION = 125;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -241,6 +241,8 @@
     historyHoverCleanup: null,
     historyAnimationFrames: [],
     historyAnimationTimers: [],
+    historyChartSettleTimers: [],
+    historyChartAnimatingUntil: 0,
     uiConfig: DEFAULT_UI_CONFIG,
     providerSummaryListener: null,
     lastScanAt: 0,
@@ -2153,8 +2155,8 @@
     if (totalNode) totalNode.textContent = total > 0 ? formatHistoryDelta(kind, total, currency) : "--";
     if (!chart) return;
 
-    const hasChartContent = !!chart.querySelector("svg");
-    if (!hasChartContent || animate) {
+    const entranceInFlight = !!animate || state.historyChartAnimatingUntil > Date.now();
+    if (!entranceInFlight) {
       chart.replaceWith(makeSpendHistoryChart(items, kind, currency, animate));
     }
   }
@@ -2267,12 +2269,22 @@
     const start = performance.now();
     const duration = 700;
     const finish = () => {
-      if (line) line.style.strokeDashoffset = "0";
+      if (line) {
+        line.style.strokeDashoffset = "0";
+        line.style.strokeDasharray = "";
+      }
       if (area) area.style.opacity = "1";
       for (const point of points) point.style.opacity = "1";
     };
-    const fallbackTimer = window.setTimeout(finish, 950);
-    state.historyAnimationTimers.push(fallbackTimer);
+    // 兜底完成器独立于可取消的动画帧：即使面板被关闭/页面被后台节流，
+    // 折线也一定会在计时器触发时落到完整可见状态，不会停在“断线”中间态。
+    const settleTimer = window.setTimeout(() => {
+      const index = state.historyChartSettleTimers.indexOf(settleTimer);
+      if (index >= 0) state.historyChartSettleTimers.splice(index, 1);
+      finish();
+    }, 1200);
+    state.historyChartSettleTimers.push(settleTimer);
+    state.historyChartAnimatingUntil = Date.now() + duration + 150;
     const tick = (now) => {
       const progress = Math.min(1, (now - start) / duration);
       const eased = 1 - Math.pow(1 - progress, 3);
@@ -2288,6 +2300,13 @@
       }
     };
     state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
+  }
+
+  function handleVisibilityChange() {
+    if (document.visibilityState !== "visible") return;
+    if (state.root && state.root.dataset.historyOpen === "true") {
+      refreshOpenSpendHistory();
+    }
   }
 
   function openSpendHistory() {
@@ -4123,6 +4142,11 @@
       state.spendStateSaveTimer = 0;
       persistSpendState();
       window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("visibilitychange", handleVisibilityChange);
+      for (const timer of state.historyChartSettleTimers) {
+        window.clearTimeout(timer);
+      }
+      state.historyChartSettleTimers = [];
       window.clearInterval(state.timer);
       window.clearTimeout(state.pendingUpdate);
       window.clearTimeout(state.historyCloseTimer);
@@ -4190,6 +4214,7 @@
   installStyle();
   installProviderSummaryListener();
   window.addEventListener("pagehide", handlePageHide);
+  window.addEventListener("visibilitychange", handleVisibilityChange);
   updateMeter();
   installObserver();
   state.timer = window.setInterval(updateMeter, UPDATE_INTERVAL_MS);
