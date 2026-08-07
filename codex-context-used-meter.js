@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 104;
+  const SCRIPT_VERSION = 105;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -1036,6 +1036,8 @@
     if (uiState.mode === "floating") return root.parentNode === document.body && root.dataset.placement === "floating";
     if (root.dataset.placement !== "inline") return false;
     if (!state.inlineHost || !state.inlineHost.isConnected || root.parentNode !== state.inlineHost) return false;
+    if (!isVisibleElement(state.inlineHost)) return false;
+    if (state.inlineBefore && !isVisibleElement(state.inlineBefore)) return false;
     if (state.inlineHost.closest(INVALID_INLINE_MOUNT_SELECTOR)) return false;
     return state.inlineBefore ? state.inlineBefore.isConnected && root.nextSibling === state.inlineBefore : true;
   }
@@ -1084,7 +1086,8 @@
       now - state.inlineMountLookupAt < INLINE_MOUNT_CACHE_MS &&
       state.inlineMountCache.parent &&
       state.inlineMountCache.parent.isConnected &&
-      (!state.inlineMountCache.before || state.inlineMountCache.before.isConnected)
+      isVisibleElement(state.inlineMountCache.parent) &&
+      (!state.inlineMountCache.before || (state.inlineMountCache.before.isConnected && isVisibleElement(state.inlineMountCache.before)))
     ) {
       return state.inlineMountCache;
     }
@@ -1182,7 +1185,7 @@
         if (current.closest(CONVERSATION_CONTENT_SELECTOR)) break;
         if (!current.closest(INVALID_INLINE_MOUNT_SELECTOR)) {
           const before = directChildOf(current, control) || control;
-          if (before && before !== current && current.contains(before)) {
+          if (before && before !== current && current.contains(before) && isVisibleElement(current) && isVisibleElement(before)) {
             return {
               parent: current,
               before,
@@ -1198,6 +1201,8 @@
         mount &&
         mount.parent &&
         mount.parent.isConnected &&
+        isVisibleElement(mount.parent) &&
+        (!mount.before || (mount.before.isConnected && isVisibleElement(mount.before))) &&
         !mount.parent.closest(INVALID_INLINE_MOUNT_SELECTOR)
       ) {
         state.inlineMountCache = mount;
