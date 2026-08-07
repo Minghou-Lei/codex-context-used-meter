@@ -14,7 +14,7 @@
   const SESSION_TOTALS_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 125;
+  const SCRIPT_VERSION = 126;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -753,6 +753,11 @@
         vector-effect: non-scaling-stroke;
       }
 
+      #${HISTORY_PORTAL_ID} .ccm-history-line-reference {
+        stroke-dasharray: 5 4;
+        opacity: 0.75;
+      }
+
       #${HISTORY_PORTAL_ID} .ccm-history-point {
         fill: #fff7ed;
         stroke: var(--ccm-history-accent);
@@ -780,6 +785,11 @@
         position: absolute;
         inset: 19px 0 auto 0;
         color: var(--ccm-muted-soft);
+      }
+
+      #${HISTORY_PORTAL_ID} .ccm-history-hint {
+        color: var(--ccm-muted-soft);
+        font-size: 10px;
       }
 
       .ccm-context-menu {
@@ -1999,7 +2009,9 @@
       const xRatio = useIndexAxis
         ? index / Math.max(validItems.length - 1, 1)
         : (item.time - firstTime) / timeSpan;
-      const x = plotLeft + xRatio * innerWidth;
+      const x = validItems.length === 1
+        ? plotRight
+        : plotLeft + xRatio * innerWidth;
       rawPoints.push({ x, value: item.amount, item });
     });
 
@@ -2014,6 +2026,7 @@
       ...point,
       y: yForValue(point.value),
     }));
+    const isSingleReading = validItems.length === 1;
 
     const yAxis = document.createElementNS("http://www.w3.org/2000/svg", "path");
     yAxis.setAttribute("class", "ccm-history-axis-line");
@@ -2044,18 +2057,26 @@
     bottomLabel.textContent = formatHistoryAxisValue(kind, axisMin, currency);
     svg.appendChild(bottomLabel);
 
-    const linePath = points
-      .map((point, index) => `${index === 0 ? "M" : "L"} ${svgPoint(point.x)} ${svgPoint(point.y)}`)
-      .join(" ");
-    const areaPath = `${linePath} L ${svgPoint(points[points.length - 1].x)} ${svgPoint(plotBottom)} L ${svgPoint(points[0].x)} ${svgPoint(plotBottom)} Z`;
+    const linePath = isSingleReading
+      ? `M ${svgPoint(plotLeft)} ${svgPoint(points[0].y)} L ${svgPoint(plotRight)} ${svgPoint(points[0].y)}`
+      : points
+        .map((point, index) => `${index === 0 ? "M" : "L"} ${svgPoint(point.x)} ${svgPoint(point.y)}`)
+        .join(" ");
 
-    const area = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    area.setAttribute("class", "ccm-history-area");
-    area.setAttribute("d", areaPath);
-    svg.appendChild(area);
+    let area = null;
+    if (!isSingleReading) {
+      const areaPath = `${linePath} L ${svgPoint(points[points.length - 1].x)} ${svgPoint(plotBottom)} L ${svgPoint(points[0].x)} ${svgPoint(plotBottom)} Z`;
+      area = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      area.setAttribute("class", "ccm-history-area");
+      area.setAttribute("d", areaPath);
+      svg.appendChild(area);
+    }
 
     const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    line.setAttribute("class", "ccm-history-line");
+    line.setAttribute(
+      "class",
+      isSingleReading ? "ccm-history-line ccm-history-line-reference" : "ccm-history-line",
+    );
     line.setAttribute("d", linePath);
     svg.appendChild(line);
     if (animate) {
@@ -2102,13 +2123,20 @@
     lastLabel.textContent = formatHistoryDelta(kind, lastPoint.item.amount, currency);
     if (lastPoint.item.meta) lastLabel.title = String(lastPoint.item.meta);
     caption.append(windowLabel, lastLabel);
+    if (isSingleReading) {
+      const hint = document.createElement("span");
+      hint.className = "ccm-history-hint";
+      hint.textContent = "1 reading";
+      hint.title = "Only one reading so far. The line will grow as usage changes.";
+      caption.append(hint);
+    }
 
     chart.append(svg, caption);
     if (animate) {
       const chartArea = chart.querySelector(".ccm-history-area");
       if (chartArea) chartArea.style.opacity = "0";
       for (const point of chart.querySelectorAll(".ccm-history-point")) point.style.opacity = "0";
-      animateHistoryChart(chart);
+      animateHistoryChart(chart, isSingleReading);
     }
     return chart;
   }
@@ -2261,7 +2289,7 @@
     state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
   }
 
-  function animateHistoryChart(chart) {
+  function animateHistoryChart(chart, isReference) {
     const line = chart.querySelector(".ccm-history-line");
     const area = chart.querySelector(".ccm-history-area");
     const points = Array.from(chart.querySelectorAll(".ccm-history-point"));
@@ -2271,7 +2299,7 @@
     const finish = () => {
       if (line) {
         line.style.strokeDashoffset = "0";
-        line.style.strokeDasharray = "";
+        line.style.strokeDasharray = isReference ? "5 4" : "";
       }
       if (area) area.style.opacity = "1";
       for (const point of points) point.style.opacity = "1";
