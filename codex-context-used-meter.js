@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 108;
+  const SCRIPT_VERSION = 109;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -2029,12 +2029,6 @@
     panel.style.setProperty("--ccm-history-max-width", `${maxWidth}px`);
     panel.style.setProperty("--ccm-history-max-height", `${maxHeight}px`);
 
-    const anchor = state.contextCard && !state.contextCard.hidden
-      ? state.contextCard
-      : state.providerCard && !state.providerCard.hidden
-        ? state.providerCard
-        : root;
-    const anchorRect = anchor.getBoundingClientRect();
     const panelRect = panel.getBoundingClientRect();
     const panelWidth = Math.min(
       Math.max(panelRect.width || HISTORY_PANEL_MIN_WIDTH, HISTORY_PANEL_MIN_WIDTH),
@@ -2044,13 +2038,14 @@
       Math.max(panelRect.height || HISTORY_PANEL_MIN_HEIGHT, HISTORY_PANEL_MIN_HEIGHT),
       maxHeight,
     );
+    const rootRect = root.getBoundingClientRect();
     const left = clampNumber(
-      anchorRect.left,
+      rootRect.left,
       HISTORY_PANEL_VIEWPORT_PADDING,
       Math.max(HISTORY_PANEL_VIEWPORT_PADDING, viewportWidth - panelWidth - HISTORY_PANEL_VIEWPORT_PADDING),
     );
-    const belowTop = anchorRect.bottom + HISTORY_PANEL_GAP;
-    const aboveTop = anchorRect.top - panelHeight - HISTORY_PANEL_GAP;
+    const belowTop = rootRect.bottom + HISTORY_PANEL_GAP;
+    const aboveTop = rootRect.top - panelHeight - HISTORY_PANEL_GAP;
     const top = belowTop + panelHeight + HISTORY_PANEL_VIEWPORT_PADDING <= viewportHeight
       ? belowTop
       : Math.max(HISTORY_PANEL_VIEWPORT_PADDING, aboveTop);
@@ -2067,6 +2062,7 @@
       return;
     }
     ensureHistoryPortal(root);
+    if (state.historyPortal) document.body.appendChild(state.historyPortal);
     if (state.historyCloseTimer) {
       window.clearTimeout(state.historyCloseTimer);
       state.historyCloseTimer = 0;
