@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 106;
+  const SCRIPT_VERSION = 107;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -1759,6 +1759,7 @@
   function currentProviderHistorySnapshot(conversationId) {
     const provider = pickProviderSummary(readProviderSummary());
     if (!provider) return null;
+    if (provider.kind === "wallet") return null;
 
     const remainingAmount = Number(provider.remainingAmount);
     const totalAmount = Number(provider.totalAmount);
