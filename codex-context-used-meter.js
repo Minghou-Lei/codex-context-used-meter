@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 113;
+  const SCRIPT_VERSION = 114;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -318,7 +318,7 @@
         --ccm-fill-critical-end: #b91c1c;
         --ccm-ring-size: 22px;
         --ccm-ring-width: 3px;
-        --ccm-inline-max-width: 210px;
+        --ccm-inline-max-width: 250px;
         position: fixed;
         top: var(--ccm-float-y, 10px);
         left: var(--ccm-float-x, 16px);
@@ -367,7 +367,7 @@
         transform: none;
         flex: 0 0 auto;
         align-self: center;
-        max-width: min(42vw, 360px);
+        max-width: min(70vw, 560px);
         margin-right: 8px;
         justify-content: flex-start;
       }
