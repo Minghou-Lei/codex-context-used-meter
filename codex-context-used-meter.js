@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 115;
+  const SCRIPT_VERSION = 117;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -621,7 +621,6 @@
         visibility: hidden;
         backdrop-filter: blur(12px);
         -webkit-app-region: no-drag;
-        transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
       }
 
       #${HISTORY_PORTAL_ID} .ccm-history-panel {
@@ -2078,6 +2077,12 @@
       return;
     }
     ensureHistoryPortal(root);
+    if (state.historyPanel) {
+      try {
+        state.historyPanel.getAnimations().forEach((animation) => animation.cancel());
+      } catch {
+      }
+    }
     if (state.historyPortal) document.body.appendChild(state.historyPortal);
     if (state.historyCloseTimer) {
       window.clearTimeout(state.historyCloseTimer);
@@ -2088,6 +2093,10 @@
     if (root.dataset.historyOpen !== "true") root.dataset.historyOpen = "true";
     if (state.historyPortal) state.historyPortal.dataset.historyOpen = "true";
     if (state.historyPanel) state.historyPanel.setAttribute("aria-hidden", "false");
+    if (state.historyPanel) {
+      state.historyPanel.style.opacity = "1";
+      state.historyPanel.style.visibility = "visible";
+    }
   }
 
   function refreshOpenSpendHistory(root = state.root) {
@@ -2100,6 +2109,12 @@
   function closeSpendHistory() {
     const root = state.root;
     if (!root) return;
+    if (state.historyPanel) {
+      try {
+        state.historyPanel.getAnimations().forEach((animation) => animation.cancel());
+      } catch {
+      }
+    }
     if (state.historyCloseTimer) {
       window.clearTimeout(state.historyCloseTimer);
       state.historyCloseTimer = 0;
@@ -2108,6 +2123,8 @@
     if (state.historyPortal) state.historyPortal.dataset.historyOpen = "false";
     if (state.historyPanel) {
       state.historyPanel.setAttribute("aria-hidden", "true");
+      state.historyPanel.style.opacity = "0";
+      state.historyPanel.style.visibility = "hidden";
     }
   }
 
