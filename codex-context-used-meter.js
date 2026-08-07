@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 111;
+  const SCRIPT_VERSION = 113;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -2127,7 +2127,13 @@
     const root = state.root;
     if (!root || root.hidden) return false;
 
-    const cards = [state.contextCard, state.providerCard].filter((card) => card && !card.hidden);
+    const cards = [state.contextCard].filter((card) => card && !card.hidden);
+    if (state.providerCard && !state.providerCard.hidden) {
+      const provider = pickProviderSummary(readProviderSummary());
+      if (!(provider && provider.kind === "wallet")) {
+        cards.push(state.providerCard);
+      }
+    }
     if (cards.some((card) => expandedRectContainsPoint(card.getBoundingClientRect(), x, y, 6))) {
       return true;
     }
