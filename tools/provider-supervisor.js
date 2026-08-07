@@ -70,7 +70,7 @@ function isCodexReady() {
       [
         "-NoProfile",
         "-Command",
-        "$p=Get-CimInstance Win32_Process -Filter \"Name = 'Codex.exe'\" | Where-Object { $_.CommandLine -match '--remote-debugging-port=\\d+' }; if($p){'1'}else{'0'}",
+        "$p=Get-CimInstance Win32_Process | Where-Object { ($_.Name -in @('Codex.exe','ChatGPT.exe')) -and $_.CommandLine -match '--remote-debugging-port=\\d+' }; if($p){'1'}else{'0'}",
       ],
       { encoding: "utf8", timeout: 3000, windowsHide: true },
       (error, stdout) => {

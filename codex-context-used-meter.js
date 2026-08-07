@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 105;
+  const SCRIPT_VERSION = 106;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -2385,9 +2385,19 @@
     const leftPercent = clampPercent(100 - usedPercent);
     const level = levelForLeftPercent(leftPercent, "provider");
     const name = String(provider.displayName || provider.id || "Provider").slice(0, 48);
-    const text = `${name} Left ${leftPercent.toFixed(1)}% (${formatMoney(remainingAmount)} left)`;
+    const isWallet = provider.kind === "wallet";
+    const text = isWallet
+      ? `${name} Left ${formatMoney(remainingAmount)}`
+      : `${name} Left ${leftPercent.toFixed(1)}% (${formatMoney(remainingAmount)} left)`;
     const width = `${leftPercent.toFixed(1)}%`;
-    const title = formatProviderTitle(name, provider, usedAmount, remainingAmount, totalAmount, usedPercent, leftPercent);
+    const title = isWallet
+      ? [
+          `${name} Balance`,
+          `Remaining: ${formatMoney(remainingAmount)}`,
+          `Currency: ${provider.currency || "CNY"}`,
+          `Status: ${provider.status || "unknown"}`,
+        ].join(" | ")
+      : formatProviderTitle(name, provider, usedAmount, remainingAmount, totalAmount, usedPercent, leftPercent);
     const providerId = String(provider.id || name || "__provider__");
     const currentUsed = Number(provider.used);
 
