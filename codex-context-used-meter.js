@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 121;
+  const SCRIPT_VERSION = 123;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -232,6 +232,7 @@
     historyCloseTimer: 0,
     historyHoverCleanup: null,
     historyAnimationFrames: [],
+    historyAnimationTimers: [],
     uiConfig: DEFAULT_UI_CONFIG,
     providerSummaryListener: null,
     lastScanAt: 0,
@@ -1863,17 +1864,6 @@
       y: yForValue(point.value),
     }));
 
-    if (points.length === 1) {
-      const onlyPoint = points[0];
-      points.push({
-        x: plotRight,
-        y: onlyPoint.y,
-        value: onlyPoint.value,
-        item: onlyPoint.item,
-        isSynthetic: true,
-      });
-    }
-
     const yAxis = document.createElementNS("http://www.w3.org/2000/svg", "path");
     yAxis.setAttribute("class", "ccm-history-axis-line");
     yAxis.setAttribute("d", `M ${svgPoint(plotLeft)} ${svgPoint(plotTop)} V ${svgPoint(plotBottom)} H ${svgPoint(plotRight)}`);
@@ -2094,12 +2084,20 @@
     for (const frame of state.historyAnimationFrames) {
       window.cancelAnimationFrame(frame);
     }
+    for (const timer of state.historyAnimationTimers) {
+      window.clearTimeout(timer);
+    }
     state.historyAnimationFrames = [];
+    state.historyAnimationTimers = [];
   }
 
   function animateHistoryPanelIn(panel) {
     const start = performance.now();
     const duration = 180;
+    const fallbackTimer = window.setTimeout(() => {
+      panel.style.opacity = "1";
+    }, 400);
+    state.historyAnimationTimers.push(fallbackTimer);
     const tick = (now) => {
       const progress = Math.min(1, (now - start) / duration);
       panel.style.opacity = String(1 - Math.pow(1 - progress, 3));
@@ -2119,6 +2117,13 @@
     const lineLength = line && line._ccmLineLength ? line._ccmLineLength : 0;
     const start = performance.now();
     const duration = 700;
+    const finish = () => {
+      if (line) line.style.strokeDashoffset = "0";
+      if (area) area.style.opacity = "1";
+      for (const point of points) point.style.opacity = "1";
+    };
+    const fallbackTimer = window.setTimeout(finish, 950);
+    state.historyAnimationTimers.push(fallbackTimer);
     const tick = (now) => {
       const progress = Math.min(1, (now - start) / duration);
       const eased = 1 - Math.pow(1 - progress, 3);
@@ -2130,9 +2135,7 @@
       if (progress < 1) {
         state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
       } else {
-        if (line) line.style.strokeDashoffset = "0";
-        if (area) area.style.opacity = "1";
-        for (const point of points) point.style.opacity = "1";
+        finish();
       }
     };
     state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
