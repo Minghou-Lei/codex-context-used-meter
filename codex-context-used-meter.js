@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 109;
+  const SCRIPT_VERSION = 110;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -1959,6 +1959,13 @@
     if (!visibleCard || visibleCard.hidden) {
       section.hidden = true;
       return;
+    }
+    if (kind === "provider") {
+      const provider = pickProviderSummary(readProviderSummary());
+      if (provider && provider.kind === "wallet") {
+        section.hidden = true;
+        return;
+      }
     }
     if (section.hidden) section.hidden = false;
 
