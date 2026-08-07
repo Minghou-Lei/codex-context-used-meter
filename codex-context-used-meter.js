@@ -9,7 +9,7 @@
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 110;
+  const SCRIPT_VERSION = 111;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -2010,11 +2010,14 @@
 
   function renderSpendHistory() {
     const grid = state.historyPanel && state.historyPanel.querySelector(".ccm-history-grid");
-    if (grid) {
-      grid.dataset.providerVisible = state.providerCard && !state.providerCard.hidden ? "true" : "false";
-    }
     renderHistorySection("context");
     renderHistorySection("provider");
+    if (grid) {
+      const providerSection = state.historyPanel && state.historyPanel.querySelector(
+        '[data-history-kind="provider"]',
+      );
+      grid.dataset.providerVisible = providerSection && providerSection.hidden ? "false" : "true";
+    }
   }
 
   function clampHistoryPanelToViewport(root) {
