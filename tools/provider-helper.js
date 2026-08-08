@@ -201,6 +201,9 @@ function toFiniteNumber(value) {
 }
 
 function normalizeSubscription(provider, payload) {
+  const wallet = normalizeWalletBalance(provider, payload);
+  if (wallet) return wallet;
+
   const subscriptions = flattenSubscriptionItems(findSubscriptionContainer(payload));
   const active = subscriptions.find((item) => item && String(item.status || "").toLowerCase() === "active");
   const updatedAt = Math.floor(Date.now() / 1000);
@@ -235,6 +238,7 @@ function normalizeSubscription(provider, payload) {
     id,
     displayName,
     status: "active",
+    currency: active.currency ? String(active.currency) : "USD",
     used: safeUsed,
     total,
     remaining,
@@ -243,6 +247,45 @@ function normalizeSubscription(provider, payload) {
     remainingAmount: remaining / divisor,
     totalAmount: total / divisor,
     expiresAt,
+    updatedAt,
+  };
+}
+
+function normalizeWalletBalance(provider, payload) {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.balance_infos)) return null;
+
+  const info =
+    payload.balance_infos.find((item) => item && typeof item === "object" && item.currency) ||
+    payload.balance_infos[0];
+  const total = toFiniteNumber(info && info.total_balance);
+  const id = provider.id || "provider";
+  const displayName = provider.displayName || id;
+  const updatedAt = Math.floor(Date.now() / 1000);
+
+  if (!Number.isFinite(total) || total < 0) {
+    return {
+      id,
+      displayName,
+      status: "invalid-balance",
+      updatedAt,
+    };
+  }
+
+  const divisor = toFiniteNumber(provider.quota && provider.quota.amountDivisor) || 500000;
+  const amount = total / divisor;
+  return {
+    id,
+    displayName,
+    status: payload.is_available === false ? "unavailable" : "active",
+    kind: "wallet",
+    currency: info ? String(info.currency || "CNY") : "CNY",
+    total,
+    used: 0,
+    remaining: total,
+    usedPercent: 0,
+    usedAmount: amount,
+    remainingAmount: amount,
+    totalAmount: amount,
     updatedAt,
   };
 }
@@ -449,7 +492,7 @@ function candidateDebugPortsFromProcesses() {
       [
         "-NoProfile",
         "-Command",
-        "Get-CimInstance Win32_Process -Filter \"Name = 'Codex.exe'\" | ForEach-Object { if ($_.CommandLine -match '--remote-debugging-port=(\\d+)') { $Matches[1] } }",
+        "Get-CimInstance Win32_Process | Where-Object { ($_.Name -in @('Codex.exe','ChatGPT.exe')) -and $_.CommandLine -match '--remote-debugging-port=(\\d+)' } | ForEach-Object { if ($_.CommandLine -match '--remote-debugging-port=(\\d+)') { $Matches[1] } }",
       ],
       { encoding: "utf8", windowsHide: true, timeout: 3000 },
     );

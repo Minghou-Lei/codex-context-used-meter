@@ -7,9 +7,14 @@
   const HISTORY_PORTAL_ID = "codex-context-meter-history-portal";
   const CONFIG_KEY = "__codexContextMeterConfig";
   const UI_STATE_STORAGE_KEY = "__codexContextMeterUiState";
+  const SPEND_STATE_STORAGE_KEY = "__codexContextMeterSpendState";
+  const SPEND_STATE_VERSION = 1;
+  const SPEND_STATE_SAVE_DELAY_MS = 400;
+  const SESSION_TOTALS_MAX_ENTRIES = 500;
+  const SESSION_TOTALS_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
   const PROVIDER_SUMMARY_KEY = "__codexContextMeterProviderSummary";
   const PROVIDER_SUMMARY_EVENT = "codex-context-meter-provider-summary";
-  const SCRIPT_VERSION = 101;
+  const SCRIPT_VERSION = 127;
   const UPDATE_INTERVAL_MS = 5000;
   const SLOW_SCAN_INTERVAL_MS = UPDATE_INTERVAL_MS;
   const CONTEXT_USAGE_BACKGROUND_SAMPLE_INTERVAL_MS = UPDATE_INTERVAL_MS;
@@ -229,8 +234,19 @@
     spendEffectTimer: 0,
     contextSessionTotalsByConversationId: new Map(),
     providerSessionTotalsByConversationId: new Map(),
+    contextSessionTotalsLastActivityByConversationId: new Map(),
+    providerSessionTotalsLastActivityByConversationId: new Map(),
+    spendStateSaveTimer: 0,
     historyCloseTimer: 0,
     historyHoverCleanup: null,
+    historyAnimationFrames: [],
+    historyAnimationTimers: [],
+    historyChartSettleTimers: [],
+    historyChartAnimatingUntil: 0,
+    historyChartConversationIdByKind: {
+      context: null,
+      provider: null,
+    },
     uiConfig: DEFAULT_UI_CONFIG,
     providerSummaryListener: null,
     lastScanAt: 0,
@@ -271,6 +287,8 @@
     threadContentLookupAt: 0,
     threadContentLookupResult: false,
   };
+
+  restoreSpendState();
 
   function installStyle() {
     const existingStyle = document.getElementById(STYLE_ID);
@@ -318,7 +336,7 @@
         --ccm-fill-critical-end: #b91c1c;
         --ccm-ring-size: 22px;
         --ccm-ring-width: 3px;
-        --ccm-inline-max-width: 210px;
+        --ccm-inline-max-width: 250px;
         position: fixed;
         top: var(--ccm-float-y, 10px);
         left: var(--ccm-float-x, 16px);
@@ -367,28 +385,29 @@
         transform: none;
         flex: 0 0 auto;
         align-self: center;
-        max-width: min(42vw, 360px);
+        max-width: min(70vw, 560px);
         margin-right: 8px;
         justify-content: flex-start;
       }
 
       #${ROOT_ID}[data-placement="inline"] .ccm-card {
-        width: var(--ccm-ring-size);
-        max-width: var(--ccm-ring-size);
-        padding: 0;
-        border: 0;
-        background: transparent;
-        box-shadow: none;
-        backdrop-filter: none;
+        width: auto;
+        max-width: var(--ccm-inline-max-width);
+        padding: 4px 10px;
+        border: 1px solid var(--ccm-card-border);
+        border-radius: 999px;
+        background: var(--ccm-card-bg);
+        box-shadow: var(--ccm-card-shadow);
+        backdrop-filter: blur(10px);
       }
 
       #${ROOT_ID}[data-placement="inline"] .ccm-row {
-        gap: 0;
+        gap: 7px;
       }
 
       #${ROOT_ID}[data-placement="inline"] .ccm-value,
       #${ROOT_ID}[data-placement="inline"] .ccm-provider-value {
-        display: none !important;
+        display: inline !important;
       }
 
       #${ROOT_ID}[data-placement="floating"] {
@@ -620,7 +639,6 @@
         visibility: hidden;
         backdrop-filter: blur(12px);
         -webkit-app-region: no-drag;
-        transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
       }
 
       #${HISTORY_PORTAL_ID} .ccm-history-panel {
@@ -647,6 +665,7 @@
         pointer-events: auto;
         visibility: visible;
       }
+
 
       #${HISTORY_PORTAL_ID} .ccm-history-grid {
         display: grid;
@@ -738,6 +757,11 @@
         vector-effect: non-scaling-stroke;
       }
 
+      #${HISTORY_PORTAL_ID} .ccm-history-line-reference {
+        stroke-dasharray: 5 4;
+        opacity: 0.75;
+      }
+
       #${HISTORY_PORTAL_ID} .ccm-history-point {
         fill: #fff7ed;
         stroke: var(--ccm-history-accent);
@@ -765,6 +789,11 @@
         position: absolute;
         inset: 19px 0 auto 0;
         color: var(--ccm-muted-soft);
+      }
+
+      #${HISTORY_PORTAL_ID} .ccm-history-hint {
+        color: var(--ccm-muted-soft);
+        font-size: 10px;
       }
 
       .ccm-context-menu {
@@ -1036,6 +1065,8 @@
     if (uiState.mode === "floating") return root.parentNode === document.body && root.dataset.placement === "floating";
     if (root.dataset.placement !== "inline") return false;
     if (!state.inlineHost || !state.inlineHost.isConnected || root.parentNode !== state.inlineHost) return false;
+    if (!isVisibleElement(state.inlineHost)) return false;
+    if (state.inlineBefore && !isVisibleElement(state.inlineBefore)) return false;
     if (state.inlineHost.closest(INVALID_INLINE_MOUNT_SELECTOR)) return false;
     return state.inlineBefore ? state.inlineBefore.isConnected && root.nextSibling === state.inlineBefore : true;
   }
@@ -1084,7 +1115,8 @@
       now - state.inlineMountLookupAt < INLINE_MOUNT_CACHE_MS &&
       state.inlineMountCache.parent &&
       state.inlineMountCache.parent.isConnected &&
-      (!state.inlineMountCache.before || state.inlineMountCache.before.isConnected)
+      isVisibleElement(state.inlineMountCache.parent) &&
+      (!state.inlineMountCache.before || (state.inlineMountCache.before.isConnected && isVisibleElement(state.inlineMountCache.before)))
     ) {
       return state.inlineMountCache;
     }
@@ -1128,15 +1160,21 @@
       return null;
     };
     const findComposerFooterMount = () => {
-      const footers = Array.from(document.querySelectorAll(".composer-footer"))
+      const footers = Array.from(document.querySelectorAll(".composer-footer, [data-composer-footer-responsive]"))
         .filter((footer) => isVisibleElement(footer) && footer.getBoundingClientRect().top > window.innerHeight * 0.45)
         .sort((left, right) => right.getBoundingClientRect().top - left.getBoundingClientRect().top);
 
       for (const footer of footers) {
         const footerChildren = sortByLeft(visibleDirectChildren(footer));
-        const toolbarRoot = footerChildren
+        let toolbarRoot = footerChildren
           .filter((child) => hasClassToken(child, "justify-end") && hasVisibleInteractiveControl(child))
           .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0];
+        if (!toolbarRoot) {
+          // 新版 Codex：footer 使用 CSS module 类名，工具栏行位于深层后代中。
+          toolbarRoot = Array.from(footer.querySelectorAll(".justify-end"))
+            .filter((child) => isVisibleElement(child) && hasVisibleInteractiveControl(child))
+            .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0];
+        }
         if (!toolbarRoot) continue;
 
         const toolbarChildren = sortByLeft(visibleDirectChildren(toolbarRoot));
@@ -1176,7 +1214,7 @@
         if (current.closest(CONVERSATION_CONTENT_SELECTOR)) break;
         if (!current.closest(INVALID_INLINE_MOUNT_SELECTOR)) {
           const before = directChildOf(current, control) || control;
-          if (before && before !== current && current.contains(before)) {
+          if (before && before !== current && current.contains(before) && isVisibleElement(current) && isVisibleElement(before)) {
             return {
               parent: current,
               before,
@@ -1192,6 +1230,8 @@
         mount &&
         mount.parent &&
         mount.parent.isConnected &&
+        isVisibleElement(mount.parent) &&
+        (!mount.before || (mount.before.isConnected && isVisibleElement(mount.before))) &&
         !mount.parent.closest(INVALID_INLINE_MOUNT_SELECTOR)
       ) {
         state.inlineMountCache = mount;
@@ -1242,6 +1282,14 @@
       root.hidden = true;
       applyFloatingUiState(root);
       closeSpendHistory();
+      if (state.inlineMountLookupAt && Date.now() - state.inlineMountLookupAt > 30000) {
+        // 长时间找不到 inline 宿主时自动降级为 floating，避免面板永远不可见。
+        state.uiState = { ...readUiState(), mode: "floating" };
+        writeUiState();
+        mountRoot(root);
+        return;
+      }
+      state.inlineMountLookupAt = state.inlineMountLookupAt || Date.now();
       scheduleUpdate(SWITCH_RETRY_INTERVAL_MS);
       return;
     }
@@ -1630,17 +1678,22 @@
     return value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
-  function formatMoney(value) {
+  function currencySymbol(currency) {
+    return String(currency || "USD").toUpperCase() === "CNY" ? "¥" : "$";
+  }
+
+  function formatMoney(value, currency) {
     const amount = formatAmount(value);
-    return amount === "--" ? amount : `$${amount}`;
+    return amount === "--" ? amount : `${currencySymbol(currency)}${amount}`;
   }
 
   function formatProviderTitle(name, provider, usedAmount, remainingAmount, totalAmount, usedPercent, leftPercent) {
+    const money = (value) => formatMoney(value, provider && provider.currency);
     return [
       `${name} Balance`,
-      `Left: ${formatMoney(remainingAmount)} (${leftPercent.toFixed(1)}%)`,
-      `Used: ${formatMoney(usedAmount)} (${usedPercent.toFixed(1)}%)`,
-      `Total: ${formatMoney(totalAmount)}`,
+      `Left: ${money(remainingAmount)} (${leftPercent.toFixed(1)}%)`,
+      `Used: ${money(usedAmount)} (${usedPercent.toFixed(1)}%)`,
+      `Total: ${money(totalAmount)}`,
       `Status: ${provider.status || "unknown"}`,
     ].join(" | ");
   }
@@ -1655,6 +1708,136 @@
     if (Number.isFinite(limitTokens)) parts.push(`Total: ${formatTokenCount(limitTokens)} Tokens`);
     if (reading.source) parts.push(`Source: ${reading.source}`);
     return parts.join(" | ");
+  }
+
+  function readStoredJson(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function touchSessionTotal(totalsMap, activityMap, conversationId, amount) {
+    const previousTotal = totalsMap.get(conversationId) || 0;
+    totalsMap.delete(conversationId);
+    totalsMap.set(conversationId, previousTotal + amount);
+    activityMap.delete(conversationId);
+    activityMap.set(conversationId, Date.now());
+    while (totalsMap.size > SESSION_TOTALS_MAX_ENTRIES) {
+      const oldestKey = totalsMap.keys().next().value;
+      totalsMap.delete(oldestKey);
+      activityMap.delete(oldestKey);
+    }
+  }
+
+  function restoreSpendState() {
+    const stored = readStoredJson(SPEND_STATE_STORAGE_KEY);
+    if (!stored || stored.version !== SPEND_STATE_VERSION) return;
+
+    const now = Date.now();
+    const historyCutoff = now - SPEND_HISTORY_WINDOW_MS;
+    for (const kind of ["context", "provider"]) {
+      const rawItems = stored.history && Array.isArray(stored.history[kind]) ? stored.history[kind] : [];
+      const items = state.spendHistory[kind];
+      for (const item of rawItems) {
+        if (!item || typeof item !== "object") continue;
+        const time = Number(item.time);
+        const amount = Number(item.amount);
+        const conversationId = normalizeConversationId(item.conversationId);
+        if (!Number.isFinite(time) || time < historyCutoff || time > now + 60 * 1000) continue;
+        if (!Number.isFinite(amount) || amount <= 0) continue;
+        items.push({
+          time,
+          amount,
+          conversationId: conversationId || "__unknown__",
+          meta: typeof item.meta === "string" ? item.meta.slice(0, 200) : "",
+        });
+        if (items.length >= SPEND_HISTORY_MAX_ITEMS) break;
+      }
+      items.sort((a, b) => a.time - b.time);
+    }
+
+    const totalsMaps = {
+      context: state.contextSessionTotalsByConversationId,
+      provider: state.providerSessionTotalsByConversationId,
+    };
+    const activityMaps = {
+      context: state.contextSessionTotalsLastActivityByConversationId,
+      provider: state.providerSessionTotalsLastActivityByConversationId,
+    };
+    for (const kind of ["context", "provider"]) {
+      const rawEntries = stored.totals && Array.isArray(stored.totals[kind]) ? stored.totals[kind] : [];
+      const entries = [];
+      for (const entry of rawEntries) {
+        if (!Array.isArray(entry) || entry.length < 3) continue;
+        const conversationId = normalizeConversationId(entry[0]);
+        const value = Number(entry[1]);
+        const lastActivity = Number(entry[2]) || 0;
+        if (!conversationId || !Number.isFinite(value) || value <= 0) continue;
+        if (lastActivity > 0 && now - lastActivity > SESSION_TOTALS_MAX_AGE_MS) continue;
+        entries.push([conversationId, value, lastActivity]);
+      }
+      entries.sort((a, b) => (a[2] || 0) - (b[2] || 0));
+      for (const [conversationId, value, lastActivity] of entries.slice(-SESSION_TOTALS_MAX_ENTRIES)) {
+        totalsMaps[kind].set(conversationId, value);
+        activityMaps[kind].set(conversationId, lastActivity || now);
+      }
+    }
+    pruneSpendHistory();
+  }
+
+  function persistSpendState() {
+    try {
+      pruneSpendHistory();
+      const now = Date.now();
+      const stored = {
+        version: SPEND_STATE_VERSION,
+        savedAt: now,
+        history: {
+          context: state.spendHistory.context.slice(0, SPEND_HISTORY_MAX_ITEMS),
+          provider: state.spendHistory.provider.slice(0, SPEND_HISTORY_MAX_ITEMS),
+        },
+        totals: {
+          context: [],
+          provider: [],
+        },
+      };
+      for (const kind of ["context", "provider"]) {
+        const totalsMap = kind === "context"
+          ? state.contextSessionTotalsByConversationId
+          : state.providerSessionTotalsByConversationId;
+        const activityMap = kind === "context"
+          ? state.contextSessionTotalsLastActivityByConversationId
+          : state.providerSessionTotalsLastActivityByConversationId;
+        const entries = [];
+        for (const conversationId of totalsMap.keys()) {
+          const value = totalsMap.get(conversationId);
+          const lastActivity = activityMap.get(conversationId) || now;
+          if (now - lastActivity > SESSION_TOTALS_MAX_AGE_MS) continue;
+          entries.push([String(conversationId), Number(value), lastActivity]);
+        }
+        entries.sort((a, b) => (a[2] || 0) - (b[2] || 0));
+        stored.totals[kind] = entries.slice(-SESSION_TOTALS_MAX_ENTRIES);
+      }
+      localStorage.setItem(SPEND_STATE_STORAGE_KEY, JSON.stringify(stored));
+    } catch {
+    }
+  }
+
+  function schedulePersistSpendState() {
+    window.clearTimeout(state.spendStateSaveTimer);
+    state.spendStateSaveTimer = window.setTimeout(() => {
+      state.spendStateSaveTimer = 0;
+      persistSpendState();
+    }, SPEND_STATE_SAVE_DELAY_MS);
+  }
+
+  function handlePageHide() {
+    persistSpendState();
   }
 
   function pruneSpendHistory(now = Date.now()) {
@@ -1678,11 +1861,19 @@
         : metaConversationId();
     const itemMeta = kind === "provider" ? String(meta || "") : "";
     if (kind === "context") {
-      const previousTotal = state.contextSessionTotalsByConversationId.get(conversationId) || 0;
-      state.contextSessionTotalsByConversationId.set(conversationId, previousTotal + amount);
+      touchSessionTotal(
+        state.contextSessionTotalsByConversationId,
+        state.contextSessionTotalsLastActivityByConversationId,
+        conversationId,
+        amount,
+      );
     } else {
-      const previousTotal = state.providerSessionTotalsByConversationId.get(conversationId) || 0;
-      state.providerSessionTotalsByConversationId.set(conversationId, previousTotal + amount);
+      touchSessionTotal(
+        state.providerSessionTotalsByConversationId,
+        state.providerSessionTotalsLastActivityByConversationId,
+        conversationId,
+        amount,
+      );
     }
 
     state.spendHistory[kind].push({
@@ -1692,6 +1883,7 @@
       meta: itemMeta,
     });
     pruneSpendHistory(now);
+    schedulePersistSpendState();
     if (state.root && state.root.dataset.historyOpen === "true") {
       renderSpendHistory();
     }
@@ -1702,22 +1894,22 @@
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  function formatHistoryDelta(kind, amount) {
-    if (kind === "provider") return `-${formatMoney(amount)}`;
+  function formatHistoryDelta(kind, amount, currency) {
+    if (kind === "provider") return `-${formatMoney(amount, currency)}`;
     return `-${Math.round(amount).toLocaleString("en-US")} Tokens`;
   }
 
-  function formatHistoryAxisValue(kind, amount) {
-    if (kind === "provider") return formatMoney(amount);
+  function formatHistoryAxisValue(kind, amount, currency) {
+    if (kind === "provider") return formatMoney(amount, currency);
     if (!Number.isFinite(amount)) return "--";
     if (amount >= 1000000) return `${(amount / 1000000).toFixed(1)}M`;
     if (amount >= 1000) return `${(amount / 1000).toFixed(1)}K`;
     return String(Math.round(amount));
   }
 
-  function formatHistoryPointTitle(kind, point) {
+  function formatHistoryPointTitle(kind, point, currency) {
     const lines = [
-      `${formatHistoryTime(point.item.time)} ${formatHistoryDelta(kind, point.item.amount)}`,
+      `${formatHistoryTime(point.item.time)} ${formatHistoryDelta(kind, point.item.amount, currency)}`,
     ];
     if (point.item.meta) lines.push(String(point.item.meta));
     return lines.join("\n");
@@ -1740,6 +1932,7 @@
   function currentProviderHistorySnapshot(conversationId) {
     const provider = pickProviderSummary(readProviderSummary());
     if (!provider) return null;
+    if (provider.kind === "wallet") return null;
 
     const remainingAmount = Number(provider.remainingAmount);
     const totalAmount = Number(provider.totalAmount);
@@ -1766,7 +1959,7 @@
     return Number.isFinite(value) ? value.toFixed(1) : "0.0";
   }
 
-  function makeSpendHistoryChart(items, kind) {
+  function makeSpendHistoryChart(items, kind, currency, animate) {
     const now = Date.now();
     const cutoff = now - SPEND_HISTORY_WINDOW_MS;
     const width = SPEND_HISTORY_CHART_WIDTH;
@@ -1820,7 +2013,9 @@
       const xRatio = useIndexAxis
         ? index / Math.max(validItems.length - 1, 1)
         : (item.time - firstTime) / timeSpan;
-      const x = plotLeft + xRatio * innerWidth;
+      const x = validItems.length === 1
+        ? plotRight
+        : plotLeft + xRatio * innerWidth;
       rawPoints.push({ x, value: item.amount, item });
     });
 
@@ -1835,17 +2030,7 @@
       ...point,
       y: yForValue(point.value),
     }));
-
-    if (points.length === 1) {
-      const onlyPoint = points[0];
-      points.push({
-        x: plotRight,
-        y: onlyPoint.y,
-        value: onlyPoint.value,
-        item: onlyPoint.item,
-        isSynthetic: true,
-      });
-    }
+    const isSingleReading = validItems.length === 1;
 
     const yAxis = document.createElementNS("http://www.w3.org/2000/svg", "path");
     yAxis.setAttribute("class", "ccm-history-axis-line");
@@ -1866,30 +2051,48 @@
     topLabel.setAttribute("class", "ccm-history-axis-label");
     topLabel.setAttribute("x", "2");
     topLabel.setAttribute("y", svgPoint(plotTop + 4));
-    topLabel.textContent = formatHistoryAxisValue(kind, axisMax);
+    topLabel.textContent = formatHistoryAxisValue(kind, axisMax, currency);
     svg.appendChild(topLabel);
 
     const bottomLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
     bottomLabel.setAttribute("class", "ccm-history-axis-label");
     bottomLabel.setAttribute("x", "2");
     bottomLabel.setAttribute("y", svgPoint(plotBottom));
-    bottomLabel.textContent = formatHistoryAxisValue(kind, axisMin);
+    bottomLabel.textContent = formatHistoryAxisValue(kind, axisMin, currency);
     svg.appendChild(bottomLabel);
 
-    const linePath = points
-      .map((point, index) => `${index === 0 ? "M" : "L"} ${svgPoint(point.x)} ${svgPoint(point.y)}`)
-      .join(" ");
-    const areaPath = `${linePath} L ${svgPoint(points[points.length - 1].x)} ${svgPoint(plotBottom)} L ${svgPoint(points[0].x)} ${svgPoint(plotBottom)} Z`;
+    const linePath = isSingleReading
+      ? `M ${svgPoint(plotLeft)} ${svgPoint(points[0].y)} L ${svgPoint(plotRight)} ${svgPoint(points[0].y)}`
+      : points
+        .map((point, index) => `${index === 0 ? "M" : "L"} ${svgPoint(point.x)} ${svgPoint(point.y)}`)
+        .join(" ");
 
-    const area = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    area.setAttribute("class", "ccm-history-area");
-    area.setAttribute("d", areaPath);
-    svg.appendChild(area);
+    let area = null;
+    if (!isSingleReading) {
+      const areaPath = `${linePath} L ${svgPoint(points[points.length - 1].x)} ${svgPoint(plotBottom)} L ${svgPoint(points[0].x)} ${svgPoint(plotBottom)} Z`;
+      area = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      area.setAttribute("class", "ccm-history-area");
+      area.setAttribute("d", areaPath);
+      svg.appendChild(area);
+    }
 
     const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    line.setAttribute("class", "ccm-history-line");
+    line.setAttribute(
+      "class",
+      isSingleReading ? "ccm-history-line ccm-history-line-reference" : "ccm-history-line",
+    );
     line.setAttribute("d", linePath);
     svg.appendChild(line);
+    if (animate) {
+      try {
+        const lineLength = line.getTotalLength();
+        line._ccmLineLength = lineLength;
+        line.style.setProperty("--ccm-line-length", String(lineLength));
+        line.style.strokeDasharray = String(lineLength);
+        line.style.strokeDashoffset = String(lineLength);
+      } catch {
+      }
+    }
 
     const realPoints = points.filter((historyPoint) => !historyPoint.isSynthetic);
     const lastPoint = realPoints[realPoints.length - 1] || points[points.length - 1];
@@ -1901,7 +2104,7 @@
       point.setAttribute("cy", svgPoint(historyPoint.y));
       point.setAttribute("r", isLatestPoint ? "3" : "2.4");
       const pointTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
-      pointTitle.textContent = formatHistoryPointTitle(kind, historyPoint);
+      pointTitle.textContent = formatHistoryPointTitle(kind, historyPoint, currency);
       point.appendChild(pointTitle);
       svg.appendChild(point);
 
@@ -1911,7 +2114,7 @@
       hit.setAttribute("cy", svgPoint(historyPoint.y));
       hit.setAttribute("r", "8");
       const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
-      title.textContent = formatHistoryPointTitle(kind, historyPoint);
+      title.textContent = formatHistoryPointTitle(kind, historyPoint, currency);
       hit.appendChild(title);
       svg.appendChild(hit);
     }
@@ -1921,15 +2124,28 @@
     const windowLabel = document.createElement("span");
     windowLabel.textContent = axisLabel;
     const lastLabel = document.createElement("span");
-    lastLabel.textContent = formatHistoryDelta(kind, lastPoint.item.amount);
+    lastLabel.textContent = formatHistoryDelta(kind, lastPoint.item.amount, currency);
     if (lastPoint.item.meta) lastLabel.title = String(lastPoint.item.meta);
     caption.append(windowLabel, lastLabel);
+    if (isSingleReading) {
+      const hint = document.createElement("span");
+      hint.className = "ccm-history-hint";
+      hint.textContent = "1 reading";
+      hint.title = "Only one reading so far. The line will grow as usage changes.";
+      caption.append(hint);
+    }
 
     chart.append(svg, caption);
+    if (animate) {
+      const chartArea = chart.querySelector(".ccm-history-area");
+      if (chartArea) chartArea.style.opacity = "0";
+      for (const point of chart.querySelectorAll(".ccm-history-point")) point.style.opacity = "0";
+      animateHistoryChart(chart, isSingleReading);
+    }
     return chart;
   }
 
-  function renderHistorySection(kind) {
+  function renderHistorySection(kind, animate) {
     const panel = state.historyPanel;
     const section = panel && panel.querySelector(`[data-history-kind="${kind}"]`);
     if (!section) return;
@@ -1939,7 +2155,15 @@
       section.hidden = true;
       return;
     }
+    const provider = kind === "provider" ? pickProviderSummary(readProviderSummary()) : null;
+    if (kind === "provider") {
+      if (provider && provider.kind === "wallet") {
+        section.hidden = true;
+        return;
+      }
+    }
     if (section.hidden) section.hidden = false;
+    const currency = provider ? provider.currency : undefined;
 
     pruneSpendHistory();
     const conversationId = metaConversationId();
@@ -1960,10 +2184,16 @@
     }
     const totalNode = section.querySelector(".ccm-history-total");
     const chart = section.querySelector(".ccm-history-chart");
-    if (totalNode) totalNode.textContent = total > 0 ? formatHistoryDelta(kind, total) : "--";
+    if (totalNode) totalNode.textContent = total > 0 ? formatHistoryDelta(kind, total, currency) : "--";
     if (!chart) return;
 
-    chart.replaceWith(makeSpendHistoryChart(items, kind));
+    const chartConversationId = state.historyChartConversationIdByKind[kind];
+    const animateChart = !!animate || chartConversationId !== conversationId;
+    const entranceInFlight = state.historyChartAnimatingUntil > Date.now();
+    if (animateChart || !entranceInFlight) {
+      chart.replaceWith(makeSpendHistoryChart(items, kind, currency, animateChart));
+      state.historyChartConversationIdByKind[kind] = conversationId;
+    }
   }
 
   function metaConversationId() {
@@ -1980,13 +2210,16 @@
     return state.providerSessionTotalsByConversationId.get(normalizedConversationId) || 0;
   }
 
-  function renderSpendHistory() {
+  function renderSpendHistory(animate) {
     const grid = state.historyPanel && state.historyPanel.querySelector(".ccm-history-grid");
+    renderHistorySection("context", animate);
+    renderHistorySection("provider", animate);
     if (grid) {
-      grid.dataset.providerVisible = state.providerCard && !state.providerCard.hidden ? "true" : "false";
+      const providerSection = state.historyPanel && state.historyPanel.querySelector(
+        '[data-history-kind="provider"]',
+      );
+      grid.dataset.providerVisible = providerSection && providerSection.hidden ? "false" : "true";
     }
-    renderHistorySection("context");
-    renderHistorySection("provider");
   }
 
   function clampHistoryPanelToViewport(root) {
@@ -2008,12 +2241,6 @@
     panel.style.setProperty("--ccm-history-max-width", `${maxWidth}px`);
     panel.style.setProperty("--ccm-history-max-height", `${maxHeight}px`);
 
-    const anchor = state.contextCard && !state.contextCard.hidden
-      ? state.contextCard
-      : state.providerCard && !state.providerCard.hidden
-        ? state.providerCard
-        : root;
-    const anchorRect = anchor.getBoundingClientRect();
     const panelRect = panel.getBoundingClientRect();
     const panelWidth = Math.min(
       Math.max(panelRect.width || HISTORY_PANEL_MIN_WIDTH, HISTORY_PANEL_MIN_WIDTH),
@@ -2023,13 +2250,14 @@
       Math.max(panelRect.height || HISTORY_PANEL_MIN_HEIGHT, HISTORY_PANEL_MIN_HEIGHT),
       maxHeight,
     );
+    const rootRect = root.getBoundingClientRect();
     const left = clampNumber(
-      anchorRect.left,
+      rootRect.left,
       HISTORY_PANEL_VIEWPORT_PADDING,
       Math.max(HISTORY_PANEL_VIEWPORT_PADDING, viewportWidth - panelWidth - HISTORY_PANEL_VIEWPORT_PADDING),
     );
-    const belowTop = anchorRect.bottom + HISTORY_PANEL_GAP;
-    const aboveTop = anchorRect.top - panelHeight - HISTORY_PANEL_GAP;
+    const belowTop = rootRect.bottom + HISTORY_PANEL_GAP;
+    const aboveTop = rootRect.top - panelHeight - HISTORY_PANEL_GAP;
     const top = belowTop + panelHeight + HISTORY_PANEL_VIEWPORT_PADDING <= viewportHeight
       ? belowTop
       : Math.max(HISTORY_PANEL_VIEWPORT_PADDING, aboveTop);
@@ -2038,35 +2266,134 @@
     panel.style.setProperty("--ccm-history-top", `${Math.round(top)}px`);
   }
 
+  function cancelHistoryAnimations() {
+    for (const frame of state.historyAnimationFrames) {
+      window.cancelAnimationFrame(frame);
+    }
+    for (const timer of state.historyAnimationTimers) {
+      window.clearTimeout(timer);
+    }
+    state.historyAnimationFrames = [];
+    state.historyAnimationTimers = [];
+  }
+
+  function animateHistoryPanelIn(panel) {
+    const start = performance.now();
+    const duration = 180;
+    const fallbackTimer = window.setTimeout(() => {
+      panel.style.opacity = "1";
+    }, 400);
+    state.historyAnimationTimers.push(fallbackTimer);
+    const tick = (now) => {
+      const progress = Math.min(1, (now - start) / duration);
+      panel.style.opacity = String(1 - Math.pow(1 - progress, 3));
+      if (progress < 1) {
+        state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
+      } else {
+        panel.style.opacity = "1";
+      }
+    };
+    state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
+  }
+
+  function animateHistoryChart(chart, isReference) {
+    const line = chart.querySelector(".ccm-history-line");
+    const area = chart.querySelector(".ccm-history-area");
+    const points = Array.from(chart.querySelectorAll(".ccm-history-point"));
+    const lineLength = line && line._ccmLineLength ? line._ccmLineLength : 0;
+    const start = performance.now();
+    const duration = 700;
+    const finish = () => {
+      if (line) {
+        line.style.strokeDashoffset = "0";
+        line.style.strokeDasharray = isReference ? "5 4" : "";
+      }
+      if (area) area.style.opacity = "1";
+      for (const point of points) point.style.opacity = "1";
+    };
+    // 兜底完成器独立于可取消的动画帧：即使面板被关闭/页面被后台节流，
+    // 折线也一定会在计时器触发时落到完整可见状态，不会停在“断线”中间态。
+    const settleTimer = window.setTimeout(() => {
+      const index = state.historyChartSettleTimers.indexOf(settleTimer);
+      if (index >= 0) state.historyChartSettleTimers.splice(index, 1);
+      finish();
+    }, 1200);
+    state.historyChartSettleTimers.push(settleTimer);
+    state.historyChartAnimatingUntil = Date.now() + duration + 150;
+    const tick = (now) => {
+      const progress = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      if (line && lineLength > 0) {
+        line.style.strokeDashoffset = String(lineLength * (1 - eased));
+      }
+      if (area) area.style.opacity = String(eased);
+      for (const point of points) point.style.opacity = String(Math.min(1, eased * 1.4));
+      if (progress < 1) {
+        state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
+      } else {
+        finish();
+      }
+    };
+    state.historyAnimationFrames.push(window.requestAnimationFrame(tick));
+  }
+
+  function handleVisibilityChange() {
+    if (document.visibilityState !== "visible") return;
+    if (state.root && state.root.dataset.historyOpen === "true") {
+      refreshOpenSpendHistory();
+    }
+  }
+
   function openSpendHistory() {
     const root = state.root;
     if (!root) return;
+    if (root.dataset.historyOpen === "true") return;
     if (root.hidden) {
       closeSpendHistory();
       return;
     }
     ensureHistoryPortal(root);
+    if (state.historyPanel) {
+      try {
+        state.historyPanel.getAnimations().forEach((animation) => animation.cancel());
+      } catch {
+      }
+    }
+    cancelHistoryAnimations();
+    if (state.historyPortal) document.body.appendChild(state.historyPortal);
     if (state.historyCloseTimer) {
       window.clearTimeout(state.historyCloseTimer);
       state.historyCloseTimer = 0;
     }
-    renderSpendHistory();
+    renderSpendHistory(true);
     clampHistoryPanelToViewport(root);
     if (root.dataset.historyOpen !== "true") root.dataset.historyOpen = "true";
     if (state.historyPortal) state.historyPortal.dataset.historyOpen = "true";
-    if (state.historyPanel) state.historyPanel.setAttribute("aria-hidden", "false");
+    if (state.historyPanel) {
+      state.historyPanel.setAttribute("aria-hidden", "false");
+      state.historyPanel.style.visibility = "visible";
+      state.historyPanel.style.opacity = "0";
+      animateHistoryPanelIn(state.historyPanel);
+    }
   }
 
   function refreshOpenSpendHistory(root = state.root) {
     if (!root || root.dataset.historyOpen !== "true") return;
     ensureHistoryPortal(root);
-    renderSpendHistory();
+    renderSpendHistory(false);
     clampHistoryPanelToViewport(root);
   }
 
   function closeSpendHistory() {
     const root = state.root;
     if (!root) return;
+    if (state.historyPanel) {
+      try {
+        state.historyPanel.getAnimations().forEach((animation) => animation.cancel());
+      } catch {
+      }
+    }
+    cancelHistoryAnimations();
     if (state.historyCloseTimer) {
       window.clearTimeout(state.historyCloseTimer);
       state.historyCloseTimer = 0;
@@ -2075,6 +2402,8 @@
     if (state.historyPortal) state.historyPortal.dataset.historyOpen = "false";
     if (state.historyPanel) {
       state.historyPanel.setAttribute("aria-hidden", "true");
+      state.historyPanel.style.opacity = "0";
+      state.historyPanel.style.visibility = "hidden";
     }
   }
 
@@ -2100,7 +2429,13 @@
     const root = state.root;
     if (!root || root.hidden) return false;
 
-    const cards = [state.contextCard, state.providerCard].filter((card) => card && !card.hidden);
+    const cards = [state.contextCard].filter((card) => card && !card.hidden);
+    if (state.providerCard && !state.providerCard.hidden) {
+      const provider = pickProviderSummary(readProviderSummary());
+      if (!(provider && provider.kind === "wallet")) {
+        cards.push(state.providerCard);
+      }
+    }
     if (cards.some((card) => expandedRectContainsPoint(card.getBoundingClientRect(), x, y, 6))) {
       return true;
     }
@@ -2209,9 +2544,9 @@
     enqueueSpendEffect(`-${Math.round(deltaTokens).toLocaleString("en-US")} Tokens`);
   }
 
-  function showProviderSpendEffect(deltaAmount) {
+  function showProviderSpendEffect(deltaAmount, currency) {
     if (!Number.isFinite(deltaAmount) || deltaAmount <= 0) return;
-    enqueueSpendEffect(`-${formatMoney(deltaAmount)}`);
+    enqueueSpendEffect(`-${formatMoney(deltaAmount, currency)}`);
   }
 
   function shouldShowContextSpendEffect(conversationId, currentUsed) {
@@ -2301,7 +2636,7 @@
       closeSpendHistory();
       if (!keepVisibleForSpend) clearSpendEffects();
     } else if (root.dataset.historyOpen === "true") {
-      renderSpendHistory();
+      renderSpendHistory(false);
     }
     if (!root.hidden) playNextSpendEffect();
   }
@@ -2366,9 +2701,19 @@
     const leftPercent = clampPercent(100 - usedPercent);
     const level = levelForLeftPercent(leftPercent, "provider");
     const name = String(provider.displayName || provider.id || "Provider").slice(0, 48);
-    const text = `${name} Left ${leftPercent.toFixed(1)}% (${formatMoney(remainingAmount)} left)`;
+    const isWallet = provider.kind === "wallet";
+    const text = isWallet
+      ? `${name} Left ${formatMoney(remainingAmount, provider.currency)}`
+      : `${name} Left ${leftPercent.toFixed(1)}% (${formatMoney(remainingAmount, provider.currency)} left)`;
     const width = `${leftPercent.toFixed(1)}%`;
-    const title = formatProviderTitle(name, provider, usedAmount, remainingAmount, totalAmount, usedPercent, leftPercent);
+    const title = isWallet
+      ? [
+          `${name} Balance`,
+          `Remaining: ${formatMoney(remainingAmount, provider.currency)}`,
+          `Currency: ${provider.currency || "CNY"}`,
+          `Status: ${provider.status || "unknown"}`,
+        ].join(" | ")
+      : formatProviderTitle(name, provider, usedAmount, remainingAmount, totalAmount, usedPercent, leftPercent);
     const providerId = String(provider.id || name || "__provider__");
     const currentUsed = Number(provider.used);
 
@@ -2378,7 +2723,7 @@
         const deltaAmount = (currentUsed - previousUsed) * (totalAmount / Number(provider.total));
         if (shouldShowProviderSpendEffect(providerId, currentUsed)) {
           recordSpend("provider", deltaAmount, providerId);
-          showProviderSpendEffect(deltaAmount);
+          showProviderSpendEffect(deltaAmount, provider.currency);
         }
       }
       state.lastAnimatedProviderUsedById.set(providerId, currentUsed);
@@ -3056,6 +3401,90 @@
     return null;
   }
 
+  // 适配新版 Codex（26.730+）：React root 暴露在 window.__codexRoot，
+  // context usage 数据位于 fiber 深层 hook state（{ modelContextWindow, last.totalTokens }）。
+  // 旧实现按对象键 DFS 深度不足，这里沿 fiber.child/sibling + hook 链精确遍历。
+  function scanStatusReactV2ContextUsage(activeConversationId) {
+    const roots = [];
+    const rootElement = document.getElementById("root");
+    if (rootElement) {
+      for (const key of Object.keys(rootElement)) {
+        if (!key.startsWith("__reactContainer$")) continue;
+        const container = rootElement[key];
+        if (container && container.current) roots.push(container.current);
+      }
+    }
+    if (window.__codexRoot && window.__codexRoot._internalRoot) {
+      const current = window.__codexRoot._internalRoot.current;
+      if (current) roots.push(current);
+    }
+    if (!roots.length) return null;
+
+    const seen = new WeakSet();
+    let visited = 0;
+    const cap = 400000;
+
+    function visitFiber(fiber) {
+      if (!fiber || visited >= cap) return null;
+      if (seen.has(fiber)) return null;
+      seen.add(fiber);
+      visited += 1;
+
+      const candidates = [];
+      try {
+        if (fiber.memoizedProps && typeof fiber.memoizedProps === "object") {
+          candidates.push(fiber.memoizedProps);
+        }
+      } catch {}
+      try {
+        if (fiber.pendingProps && typeof fiber.pendingProps === "object") {
+          candidates.push(fiber.pendingProps);
+        }
+      } catch {}
+      let hook = fiber.memoizedState;
+      let hookIndex = 0;
+      while (hook && hookIndex < 80) {
+        try {
+          if (hook.memoizedState && typeof hook.memoizedState === "object") {
+            candidates.push(hook.memoizedState);
+          }
+        } catch {}
+        hook = hook.next;
+        hookIndex += 1;
+      }
+
+      for (const candidate of candidates) {
+        try {
+          if (!looksLikeStatusContextUsageObject(candidate)) continue;
+          const fiberProps = fiber.memoizedProps;
+          const fiberConversationId =
+            fiberProps &&
+            typeof fiberProps === "object" &&
+            normalizeConversationId(
+              fiberProps.conversationId || fiberProps.threadId || fiberProps.localConversationId,
+            );
+          if (
+            fiberConversationId &&
+            activeConversationId &&
+            !conversationIdsMatch(fiberConversationId, activeConversationId)
+          ) {
+            continue;
+          }
+          const reading = parseStatusContextUsageObject(candidate, "status-react-v2", null);
+          if (reading) return withConversationId(reading, activeConversationId);
+        } catch {}
+      }
+
+      return visitFiber(fiber.child) || visitFiber(fiber.sibling);
+    }
+
+    for (const root of roots) {
+      const reading = visitFiber(root);
+      if (reading) return reading;
+    }
+    return null;
+  }
+
   function isAppSignalScope(value) {
     return !!(
       value &&
@@ -3507,6 +3936,13 @@
       return statusReactReading;
     }
 
+    const statusReactV2Reading = scanStatusReactV2ContextUsage(activeConversationId);
+    if (statusReactV2Reading) {
+      state.switchRetryUntil = 0;
+      clearRetryUpdate();
+      return statusReactV2Reading;
+    }
+
     if (canRunExpensiveFallback) {
       state.expensiveFallbackScannedAt = now;
       state.expensiveFallbackConversationId = activeConversationId;
@@ -3737,6 +4173,15 @@
     refresh: updateMeter,
     setProviderSummary,
     destroy() {
+      window.clearTimeout(state.spendStateSaveTimer);
+      state.spendStateSaveTimer = 0;
+      persistSpendState();
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("visibilitychange", handleVisibilityChange);
+      for (const timer of state.historyChartSettleTimers) {
+        window.clearTimeout(timer);
+      }
+      state.historyChartSettleTimers = [];
       window.clearInterval(state.timer);
       window.clearTimeout(state.pendingUpdate);
       window.clearTimeout(state.historyCloseTimer);
@@ -3788,6 +4233,14 @@
         hasAppSignalModules: !!state.appSignalModules,
         appSignalTokenUsageSelectorExport: state.appSignalTokenUsageSelectorExport,
         providerSummary: state.providerSummary,
+        spendHistory: {
+          context: state.spendHistory.context.slice(),
+          provider: state.spendHistory.provider.slice(),
+        },
+        sessionTotals: {
+          context: Array.from(state.contextSessionTotalsByConversationId.entries()),
+          provider: Array.from(state.providerSessionTotalsByConversationId.entries()),
+        },
       };
     },
   };
@@ -3795,6 +4248,8 @@
   restoreLegacyCaptureHooks();
   installStyle();
   installProviderSummaryListener();
+  window.addEventListener("pagehide", handlePageHide);
+  window.addEventListener("visibilitychange", handleVisibilityChange);
   updateMeter();
   installObserver();
   state.timer = window.setInterval(updateMeter, UPDATE_INTERVAL_MS);
